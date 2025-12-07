@@ -1,0 +1,278 @@
+# config.yml
+particles:
+  Jpsi:
+    J: 1
+    P: -1
+    mass: 3.0969
+    tex: "J/#psi"
+  eta:
+    J: 0
+    P: -1
+    mass: 0.5478
+    tex: "\\eta"
+  Kp:
+    J: 0
+    P: -1
+    mass: 0.4937
+    tex: "K^{+}"
+  Km:
+    J: 0
+    P: -1
+    mass: 0.4937
+    tex: "K^{-}"
+
+data:
+  dat_order: [Kp, Km, eta]
+  data: ["/home/whitewash/tfpwa/Jpsi2KKeta/forPWA/data.dat"]
+  phsp: ["/home/whitewash/tfpwa/Jpsi2KKeta/forPWA/phsp.dat"]
+
+decay_chains:
+  chain1:
+    decay:
+      - Jpsi: [eta, R_KK]
+      - R_KK: [Kp, Km]
+    R_KK:
+      - [J: 1, P: -1]: [phi1020, X1750, omega1420, phi1680, rho1900, rho2150, NR1_KK]
+      - [J: 3, P: -1]: [omega3_1670, phi3_1850, rho3_2250, NR3_KK]
+      - [J: 5, P: -1]: [NR5_KK]
+    legend: [Jpsi,'->',R_KK, eta, ',', ' ', R_KK,'->',Kp, Km]
+    # legend: [R_KK, eta]
+
+  chain2:
+    decay:
+      - Jpsi: [Km, R_Kpeta]
+      - R_Kpeta: [Kp, eta]
+    R_Kpeta:
+      - [J: 1, P: -1]: [K1_1410p, K1_1680p]
+      - [J: 2, P: 1]: [K2_1980p, K2_1430p, NR2_Kpeta]
+      - [J: 3, P: -1]: [NR3_Kpeta, K3_1780p]
+      - [J: 4, P: 1]: [K4_2045p, NR4_Kpeta]
+      - [J: 5, P: -1]: [K5_2380p]
+    legend: [R_Kpeta]
+
+
+  chain3:
+    decay:
+      - Jpsi: [Kp, R_Kmeta]
+      - R_Kmeta: [Km, eta]
+    R_Kmeta:
+      - [J: 1, P: -1]: [K1_1410m, K1_1680m]
+      - [J: 2, P: 1]: [K2_1980m, K2_1430m, NR2_Kmeta]
+      - [J: 3, P: -1]: [NR3_Kmeta, K3_1780m]
+      - [J: 4, P: 1]: [K4_2045m, NR4_Kmeta]
+      - [J: 5, P: -1]: [K5_2380m]
+    legend: [R_Kmeta]
+
+conjugate_pairs:
+  - [K1_1410p, K1_1410m]
+  - [K1_1680p, K1_1680m]
+  - [K2_1430p, K2_1430m]
+  - [K2_1980p, K2_1980m]
+  - [K3_1780p, K3_1780m]
+  - [K4_2045p, K4_2045m]
+  - [K5_2380p, K5_2380m]
+  - [NR2_Kpeta, NR2_Kmeta]
+  - [NR3_Kpeta, NR3_Kmeta]
+  - [NR4_Kpeta, NR4_Kmeta]
+
+resonances:
+  phi1020:
+    J: 1
+    P: -1
+    model: BWR
+    parameters: [1.0195, 0.005]
+    tex: "\\phi(1020)"
+
+  X1750:
+    J: 1
+    P: -1
+    model: BWR
+    parameters: [1.753, 0.12]
+    tex: "X(1750)"
+
+  omega1420:
+    J: 1
+    P: -1
+    model: BWR
+    parameters: [1.41, 0.29]
+    tex: "\\omega(1420)"
+
+  phi1680:
+    J: 1
+    P: -1
+    model: BWR
+    parameters: [1.659, 0.164]
+    tex: "\\phi(1680)"
+
+  rho1900:
+    J: 1
+    P: -1
+    model: BWR
+    parameters: [1.880, 0.069]
+    tex: "\\rho(1900)"
+
+  rho2150:
+    J: 1
+    P: -1
+    model: BWR
+    parameters: [2.044, 0.163]
+    tex: "\\rho(2150)"
+
+  NR1_KK:
+    J: 1
+    P: -1
+    model: ONE
+    parameters: [1.5]
+    tex: "NR_{1}^{KK}"
+
+  omega3_1670:
+    J: 1
+    P: -1
+    model: BWR
+    parameters: [1.667, 0.168]
+    tex: "\\omega_{3}(1670)"
+
+  phi3_1850:
+    J: 3
+    P: -1
+    model: BWR
+    parameters: [1.854, 0.160]
+    tex: "\\phi_{3}(1850)"
+  rho3_2250:
+    J: 3
+    P: -1
+    model: BWR
+    parameters: [2.248, 0.185]
+    tex: "\\rho_{3}(2250)"
+  NR3_KK:
+    J: 3
+    P: -1
+    model: ONE
+    parameters: [1.5]
+    tex: "NR_{3}^{KK}"
+  NR5_KK:
+    J: 5
+    P: -1
+    model: ONE
+    parameters: [1.5]
+    tex: "NR_{5}^{KK}"
+  K1_1410p:
+    J: 1
+    P: -1
+    model: BWR
+    parameters: [1.368, 0.232]
+    tex: "K_{1}(1410)^{+}"
+  K1_1680p:
+    J: 1
+    P: -1
+    model: BWR
+    parameters: [1.718, 0.32]
+    tex: "K_{1}(1680)^{+}"
+  K2_1980p:
+    J: 2
+    P: 1
+    model: BWR
+    parameters: [2.016, 0.286]
+    tex: "K_{2}(1980)^{+}"
+  K2_1430p:
+    J: 2
+    P: 1
+    model: BWR
+    parameters: [1.427, 0.1]
+    tex: "K_{2}(1430)^{+}"
+  NR2_Kpeta:
+    J: 2
+    P: 1
+    model: ONE
+    parameters: [1.5]
+    tex: "NR_{2}^{K^{+}\\eta}"
+  NR3_Kpeta:
+    J: 3
+    P: -1
+    model: ONE
+    parameters: [1.5]
+    tex: "NR_{3}^{K^{+}\\eta}"
+  K3_1780p:
+    J: 3
+    P: -1
+    model: BWR
+    parameters: [1.711, 0.333]
+    tex: "K_{3}(1780)^{+}"
+  K4_2045p:
+    J: 4
+    P: 1
+    model: BWR
+    parameters: [2.186, 0.241]
+    tex: "K_{4}(2045)^{+}"
+  NR4_Kpeta:
+    J: 4
+    P: 1
+    model: ONE
+    parameters: [1.5]
+    tex: "NR_{4}^{K^{+}\\eta}"
+  K5_2380p:
+    J: 5
+    P: -1
+    model: BWR
+    parameters: [2.328, 0.18]
+    tex: "K_{5}(2380)^{+}"
+  K1_1410m:
+    J: 1
+    P: -1
+    model: BWR
+    parameters: [1.368, 0.232]
+    tex: "K_{1}(1410)^{-}"
+  K1_1680m:
+    J: 1
+    P: -1
+    model: BWR
+    parameters: [1.718, 0.32]
+    tex: "K_{1}(1680)^{-}"
+  K2_1980m:
+    J: 2
+    P: 1
+    model: BWR
+    parameters: [2.016, 0.286]
+    tex: "K_{2}(1980)^{-}"
+  K2_1430m:
+    J: 2
+    P: 1
+    model: BWR
+    parameters: [1.427, 0.1]
+    tex: "K_{2}(1430)^{-}"
+  NR2_Kmeta:
+    J: 2
+    P: 1
+    model: ONE
+    parameters: [1.5]
+    tex: "NR_{2}^{K^{-}\\eta}"
+  NR3_Kmeta:
+    J: 3
+    P: -1
+    model: ONE
+    parameters: [1.5]
+    tex: "NR_{3}^{K^{-}\\eta}"
+  K3_1780m:
+    J: 3
+    P: -1
+    model: BWR
+    parameters: [1.711, 0.333]
+    tex: "K_{3}(1780)^{-}"
+  K4_2045m:
+    J: 4
+    P: 1
+    model: BWR
+    parameters: [2.186, 0.241]
+    tex: "K_{4}(2045)^{-}"
+  NR4_Kmeta:
+    J: 4
+    P: 1
+    model: ONE
+    parameters: [1.5]
+    tex: "NR_{4}^{K^{-}\\eta}"
+  K5_2380m:
+    J: 5
+    P: -1
+    model: BWR
+    parameters: [2.328, 0.18]
+    tex: "K_{5}(2380)^{-}"
