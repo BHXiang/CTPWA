@@ -108,9 +108,7 @@ private:
 
     void addParticleIfNotExists(const std::string &name, int spin, int parity, double mass);
     // void computeNPolarizations_(const std::map<std::string, std::vector<LorentzVector>> &finalMomenta);
-    DeviceMomenta *convertToDeviceMomenta(const std::map<std::string, std::vector<LorentzVector>> &finalMomenta,
-                                          const std::map<std::string, int> &particleToIndex,
-                                          const std::vector<DecayNodeHost> &decayChain);
+    DeviceMomenta *convertToDeviceMomenta(const std::map<std::string, std::vector<LorentzVector>> &finalMomenta, const std::map<std::string, int> &particleToIndex, const std::vector<DecayNodeHost> &decayChain, int start_event, int batch_size);
 
 public:
     AmpCasDecay(const std::vector<Particle> &particles);
@@ -141,7 +139,7 @@ __global__ void computeSLAmpKernel(
     const int *d_dj, const int *d_dj1, const int *d_dj2,
     const SL *d_slCombination,
     int num_sl, int num_events, int num_polar,
-    int decayChain_size, int buffer_size_per_event);
+    int decayChain_size, int buffer_size_per_event, int start_event);
 
 __global__ void computeAmpsKernel(
     cuDoubleComplex *amplitudes,           // 输出振幅
