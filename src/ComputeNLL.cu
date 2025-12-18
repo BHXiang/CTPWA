@@ -8,7 +8,7 @@
 
 // 最简单的合并版本
 __global__ void simpleMagnitudeSum(
-    const cuDoubleComplex *__restrict__ vector,
+    const cuComplex *__restrict__ vector,
     double *__restrict__ final_result,
     int M)
 {
@@ -20,9 +20,11 @@ __global__ void simpleMagnitudeSum(
     // 处理当前线程的元素
     if (i < M)
     {
-        cuDoubleComplex val = vector[i];
+        cuComplex val = vector[i];
         sum = val.x * val.x + val.y * val.y;
     }
+
+    // printf("Thread %d processed index %d with partial sum %f\n", tid, i, sum);
 
     // 使用共享内存进行归约
     extern __shared__ double sdata[];
@@ -48,9 +50,9 @@ __global__ void simpleMagnitudeSum(
 
 // 使用合并核函数的优化版本
 void computePHSPfactor(
-    const cuDoubleComplex *d_matrix,
-    const cuDoubleComplex *d_vector,
-    cuDoubleComplex *d_B,
+    const cuComplex *d_matrix,
+    const cuComplex *d_vector,
+    cuComplex *d_B,
     double *d_final_result,
     int M, int N)
 {
@@ -58,12 +60,12 @@ void computePHSPfactor(
     cublasCreate(&handle);
 
     // 步骤1: 使用cuBLAS计算矩阵-向量乘法
-    const cuDoubleComplex alpha = make_cuDoubleComplex(1.0, 0.0);
-    const cuDoubleComplex beta = make_cuDoubleComplex(0.0, 0.0);
+    const cuComplex alpha = make_cuComplex(1.0, 0.0);
+    const cuComplex beta = make_cuComplex(0.0, 0.0);
 
     // 根据矩阵存储顺序选择合适的操作
     // 如果矩阵是行主序的M×N，使用转置操作
-    cublasZgemv(handle, CUBLAS_OP_N,
+    cublasCgemv(handle, CUBLAS_OP_N,
                 M, N, // 矩阵维度
                 &alpha,
                 d_matrix, M, // lda = N
@@ -95,8 +97,8 @@ void computePHSPfactor(
 
 // 合并的核函数：计算模平方、分组求和、对数计算和最终求和
 __global__ void computeNLLKernel(
-    const cuDoubleComplex *__restrict__ vector,
-    cuDoubleComplex *__restrict__ group_sums,
+    const cuComplex *__restrict__ vector,
+    cuComplex *__restrict__ group_sums,
     double *__restrict__ total_sum,
     int nlength,
     int npolar,
@@ -119,7 +121,7 @@ __global__ void computeNLLKernel(
             int idx = start_idx + i;
             if (idx < nlength)
             {
-                cuDoubleComplex val = vector[idx];
+                cuComplex val = vector[idx];
                 group_sum += (val.x * val.x + val.y * val.y);
             }
         }
@@ -127,7 +129,7 @@ __global__ void computeNLLKernel(
         // 存储组和到全局内存（如果提供了group_sums指针）
         if (group_sums != nullptr)
         {
-            group_sums[group_idx] = make_cuDoubleComplex(1.0 / group_sum, 0.0);
+            group_sums[group_idx] = make_cuComplex(1.0 / group_sum, 0.0);
         }
 
         // 计算负对数似然
@@ -172,10 +174,10 @@ __global__ void computeNLLKernel(
 
 // 优化的NLL计算函数，使用cuBLAS和合并核函数
 void computeNll(
-    const cuDoubleComplex *d_matrix,
-    const cuDoubleComplex *d_vector,
-    cuDoubleComplex *d_S,
-    cuDoubleComplex *d_Q,
+    const cuComplex *d_matrix,
+    const cuComplex *d_vector,
+    cuComplex *d_S,
+    cuComplex *d_Q,
     double *d_final_result,
     int nlength, int ngls,
     int npolar,
@@ -185,11 +187,11 @@ void computeNll(
     cublasCreate(&handle);
 
     // 步骤1: 使用cuBLAS计算矩阵-向量乘法 d_S = matrix * vector
-    const cuDoubleComplex alpha = make_cuDoubleComplex(1.0, 0.0);
-    const cuDoubleComplex beta = make_cuDoubleComplex(0.0, 0.0);
+    const cuComplex alpha = make_cuComplex(1.0, 0.0);
+    const cuComplex beta = make_cuComplex(0.0, 0.0);
 
     // 使用非转置操作（根据您的测试结果）
-    cublasZgemv(handle, CUBLAS_OP_N,
+    cublasCgemv(handle, CUBLAS_OP_N,
                 nlength, ngls, // 矩阵维度: nlength × ngls
                 &alpha,
                 d_matrix, nlength, // lda = nlength
@@ -233,7 +235,7 @@ void computeNll(
 
 // 核函数：计算复数模平方并按 npolar 分组求和
 __global__ void computeModSquareAndReduce(
-    const cuDoubleComplex *__restrict__ complex_result,
+    const cuComplex *__restrict__ complex_result,
     double *__restrict__ final_result,
     int nEvents, int npolar)
 {
@@ -248,7 +250,7 @@ __global__ void computeModSquareAndReduce(
     for (int polar_idx = 0; polar_idx < npolar; polar_idx++)
     {
         int global_idx = event_idx * npolar + polar_idx;
-        cuDoubleComplex val = complex_result[global_idx];
+        cuComplex val = complex_result[global_idx];
         double mod_square = val.x * val.x + val.y * val.y;
         sum += mod_square;
     }
@@ -257,8 +259,8 @@ __global__ void computeModSquareAndReduce(
 }
 
 void computeWeightResult(
-    const cuDoubleComplex *d_matrix,
-    const cuDoubleComplex *d_vector,
+    const cuComplex *d_matrix,
+    const cuComplex *d_vector,
     double *d_final_result,
     int nEvents, int ngls, int npolar)
 {
@@ -266,17 +268,17 @@ void computeWeightResult(
     cublasCreate(&handle);
 
     // 分配设备内存
-    cuDoubleComplex *d_complex_result = nullptr;
-    cudaMalloc(&d_complex_result, nEvents * npolar * sizeof(cuDoubleComplex));
+    cuComplex *d_complex_result = nullptr;
+    cudaMalloc(&d_complex_result, nEvents * npolar * sizeof(cuComplex));
 
     // cuBLAS 矩阵向量乘法参数
-    const cuDoubleComplex alpha = make_cuDoubleComplex(1.0, 0.0);
-    const cuDoubleComplex beta = make_cuDoubleComplex(0.0, 0.0);
+    const cuComplex alpha = make_cuComplex(1.0, 0.0);
+    const cuComplex beta = make_cuComplex(0.0, 0.0);
 
     // 执行矩阵向量乘法: complex_result = matrix * vector
     // 注意：cuBLAS 使用列主序，所以我们需要适当调整参数
     // 如果矩阵是行主序的 M x N 矩阵，在 cuBLAS 中相当于列主序的 N x M 矩阵的转置
-    cublasZgemv(handle,
+    cublasCgemv(handle,
                 CUBLAS_OP_N,      // 如果矩阵是行主序，可能需要使用 CUBLAS_OP_T
                 nEvents * npolar, // 矩阵行数
                 ngls,             // 矩阵列数

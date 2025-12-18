@@ -131,142 +131,20 @@ int AmpCasDecay::computeNPolarizations(const std::map<std::string, std::vector<L
     return nPolar;
 }
 
-// DeviceMomenta *AmpCasDecay::convertToDeviceMomenta(const std::map<std::string, std::vector<LorentzVector>> &finalMomenta, const std::map<std::string, int> &particleToIndex, const std::vector<DecayNodeHost> &decayChain)
-// {
-//     // 获取事件数量和粒子数量
-//     int n_events = finalMomenta.begin()->second.size();
-//     int n_particles = particleToIndex.size();
-
-//     // 在主机端分配所有粒子的四动量数组
-//     std::vector<LorentzVector> host_momenta(n_events * n_particles);
-//     std::fill(host_momenta.begin(), host_momenta.end(), LorentzVector());
-
-//     // 创建粒子计算状态标记
-//     std::vector<bool> particle_calculated(n_particles, false);
-
-//     // 第一步：将末态粒子的四动量复制到对应位置
-//     for (const auto &particle_momenta : finalMomenta)
-//     {
-//         const std::string &particle_name = particle_momenta.first;
-//         const std::vector<LorentzVector> &momenta_vec = particle_momenta.second;
-
-//         auto it = particleToIndex.find(particle_name);
-//         if (it != particleToIndex.end())
-//         {
-//             int particle_idx = it->second;
-//             for (int event_idx = 0; event_idx < n_events; ++event_idx)
-//             {
-//                 host_momenta[event_idx * n_particles + particle_idx] = momenta_vec[event_idx];
-//             }
-//             particle_calculated[particle_idx] = true;
-//         }
-//     }
-
-//     // 第二步：根据衰变链逐级计算中间态和初态粒子的四动量
-//     bool changed = true;
-//     int max_iterations = decayChain.size() + 1;
-//     int iteration = 0;
-
-//     while (changed && iteration < max_iterations)
-//     {
-//         changed = false;
-
-//         for (const auto &decay_node : decayChain)
-//         {
-//             const std::string &mother = decay_node.mother;
-//             const std::string &daug1 = decay_node.daug1;
-//             const std::string &daug2 = decay_node.daug2;
-
-//             auto mother_it = particleToIndex.find(mother);
-//             auto daug1_it = particleToIndex.find(daug1);
-//             auto daug2_it = particleToIndex.find(daug2);
-
-//             if (mother_it == particleToIndex.end() ||
-//                 daug1_it == particleToIndex.end() ||
-//                 daug2_it == particleToIndex.end())
-//             {
-//                 continue;
-//             }
-
-//             int mother_idx = mother_it->second;
-//             int daug1_idx = daug1_it->second;
-//             int daug2_idx = daug2_it->second;
-
-//             if (!particle_calculated[mother_idx] &&
-//                 particle_calculated[daug1_idx] &&
-//                 particle_calculated[daug2_idx])
-//             {
-//                 // 计算所有事件的母粒子四动量
-//                 for (int event_idx = 0; event_idx < n_events; ++event_idx)
-//                 {
-//                     const LorentzVector &daug1_momentum = host_momenta[event_idx * n_particles + daug1_idx];
-//                     const LorentzVector &daug2_momentum = host_momenta[event_idx * n_particles + daug2_idx];
-//                     LorentzVector mother_momentum = daug1_momentum + daug2_momentum;
-//                     host_momenta[event_idx * n_particles + mother_idx] = mother_momentum;
-//                 }
-
-//                 particle_calculated[mother_idx] = true;
-//                 changed = true;
-//             }
-//         }
-//         iteration++;
-//     }
-
-//     // 第三步：将数据复制到设备
-//     DeviceMomenta *d_momenta;
-//     cudaMalloc(&d_momenta, sizeof(DeviceMomenta));
-
-//     // 在设备端分配四动量数组
-//     LorentzVector *d_momenta_array;
-//     cudaMalloc(&d_momenta_array, host_momenta.size() * sizeof(LorentzVector));
-//     cudaMemcpy(d_momenta_array, host_momenta.data(),
-//                host_momenta.size() * sizeof(LorentzVector),
-//                cudaMemcpyHostToDevice);
-
-//     // 设置设备端结构体参数
-//     DeviceMomenta h_momenta;
-//     h_momenta.momenta = d_momenta_array;
-//     h_momenta.n_events = n_events;
-//     h_momenta.n_particles_per_event = n_particles;
-
-//     // 将结构体复制到设备
-//     cudaMemcpy(d_momenta, &h_momenta, sizeof(DeviceMomenta), cudaMemcpyHostToDevice);
-
-//     return d_momenta;
-// }
-
-DeviceMomenta *AmpCasDecay::convertToDeviceMomenta(
-    const std::map<std::string, std::vector<LorentzVector>> &finalMomenta,
-    const std::map<std::string, int> &particleToIndex,
-    const std::vector<DecayNodeHost> &decayChain,
-    int start_event,
-    int batch_size)
+DeviceMomenta *AmpCasDecay::convertToDeviceMomenta(const std::map<std::string, std::vector<LorentzVector>> &finalMomenta, const std::map<std::string, int> &particleToIndex, const std::vector<DecayNodeHost> &decayChain)
 {
-    // 获取事件总数和粒子数量
-    int total_events = finalMomenta.begin()->second.size();
+    // 获取事件数量和粒子数量
+    int n_events = finalMomenta.begin()->second.size();
     int n_particles = particleToIndex.size();
 
-    // 计算当前批次的实际事件数
-    int n_events = batch_size;
-    if (n_events == -1 || start_event + n_events > total_events)
-    {
-        n_events = total_events - start_event;
-    }
-
-    if (n_events <= 0)
-    {
-        // 返回空指针或处理错误
-        return nullptr;
-    }
-
-    // 在主机端分配当前批次的四动量数组
+    // 在主机端分配所有粒子的四动量数组
     std::vector<LorentzVector> host_momenta(n_events * n_particles);
     std::fill(host_momenta.begin(), host_momenta.end(), LorentzVector());
 
     // 创建粒子计算状态标记
     std::vector<bool> particle_calculated(n_particles, false);
 
-    // 第一步：将末态粒子的四动量复制到对应位置（仅复制批次内的数据）
+    // 第一步：将末态粒子的四动量复制到对应位置
     for (const auto &particle_momenta : finalMomenta)
     {
         const std::string &particle_name = particle_momenta.first;
@@ -276,11 +154,9 @@ DeviceMomenta *AmpCasDecay::convertToDeviceMomenta(
         if (it != particleToIndex.end())
         {
             int particle_idx = it->second;
-            for (int batch_idx = 0; batch_idx < n_events; ++batch_idx)
+            for (int event_idx = 0; event_idx < n_events; ++event_idx)
             {
-                int global_event_idx = start_event + batch_idx;
-                host_momenta[batch_idx * n_particles + particle_idx] =
-                    momenta_vec[global_event_idx];
+                host_momenta[event_idx * n_particles + particle_idx] = momenta_vec[event_idx];
             }
             particle_calculated[particle_idx] = true;
         }
@@ -320,15 +196,13 @@ DeviceMomenta *AmpCasDecay::convertToDeviceMomenta(
                 particle_calculated[daug1_idx] &&
                 particle_calculated[daug2_idx])
             {
-                // 计算批次内所有事件的母粒子四动量
-                for (int batch_idx = 0; batch_idx < n_events; ++batch_idx)
+                // 计算所有事件的母粒子四动量
+                for (int event_idx = 0; event_idx < n_events; ++event_idx)
                 {
-                    const LorentzVector &daug1_momentum =
-                        host_momenta[batch_idx * n_particles + daug1_idx];
-                    const LorentzVector &daug2_momentum =
-                        host_momenta[batch_idx * n_particles + daug2_idx];
+                    const LorentzVector &daug1_momentum = host_momenta[event_idx * n_particles + daug1_idx];
+                    const LorentzVector &daug2_momentum = host_momenta[event_idx * n_particles + daug2_idx];
                     LorentzVector mother_momentum = daug1_momentum + daug2_momentum;
-                    host_momenta[batch_idx * n_particles + mother_idx] = mother_momentum;
+                    host_momenta[event_idx * n_particles + mother_idx] = mother_momentum;
                 }
 
                 particle_calculated[mother_idx] = true;
@@ -354,7 +228,6 @@ DeviceMomenta *AmpCasDecay::convertToDeviceMomenta(
     h_momenta.momenta = d_momenta_array;
     h_momenta.n_events = n_events;
     h_momenta.n_particles_per_event = n_particles;
-    // h_momenta.start_event = start_event; // 添加批次起始信息
 
     // 将结构体复制到设备
     cudaMemcpy(d_momenta, &h_momenta, sizeof(DeviceMomenta), cudaMemcpyHostToDevice);
@@ -391,7 +264,7 @@ void AmpCasDecay::computeSLAmps(const std::map<std::string, std::vector<LorentzV
     }
 
     // 所有四动量都入设备端
-    d_momenta_ = convertToDeviceMomenta(finalMomenta, particleToIndex_, decayChain_, 0, -1);
+    d_momenta_ = convertToDeviceMomenta(finalMomenta, particleToIndex_, decayChain_);
 
     // 准备使用索引的衰变节点
     std::vector<DecayNode> host_decayNodes;
@@ -479,40 +352,36 @@ void AmpCasDecay::computeSLAmps(const std::map<std::string, std::vector<LorentzV
         amp_size += 2 * (2 * dj + 1) * (2 * dj1 + 1) * (2 * dj2 + 1) + total_size;
     }
 
-    const int batch_size = 1000000;
+    int batch_size = 1000000;
 
-    for (int start_event = 0; start_event < nEvents_; start_event += batch_size)
+    for (int start = 0; start < nEvents_; start += batch_size)
     {
-
-        // 计算当前批次的实际事件数
-        int n_events = batch_size;
-        if (n_events == -1 || start_event + n_events > nEvents_)
+        int n_events = 0;
+        if (start + batch_size <= nEvents_)
         {
-            n_events = nEvents_ - start_event;
+            n_events = batch_size;
         }
-
-        if (n_events <= 0)
+        else
         {
-            // 返回空指针或处理错误
-            std::cerr << "CUDA error in computeSLAmp: n_events are null." << std::endl;
+            n_events = nEvents_ - start;
         }
 
         thrust::complex<double> *d_amp_buffer;
         cudaMalloc(&d_amp_buffer, n_events * nSLCombs_ * amp_size * sizeof(thrust::complex<double>));
         // cudaMalloc(&d_amp_buffer, 1 * sizeof(thrust::complex<double>));
 
-        // int sharedMemSize = 3000 * sizeof(thrust::complex<double>);
+        int sharedMemSize = 3000 * sizeof(thrust::complex<double>);
         // int sharedMemSize = 1 * sizeof(thrust::complex<double>);
 
         // 计算振幅
         int blockSize = 256;
-        int numBlocks = (n_events + blockSize - 1) / blockSize;
+        int numBlocks = (nEvents_ + blockSize - 1) / blockSize;
         // computeSLAmpKernel<<<gridDim, blockDim, sharedMemSize>>>(
         // computeSLAmpKernel<<<gridDim, blockDim>>>(
-        computeSLAmpKernel<<<numBlocks, blockSize>>>(
+        computeSLAmpKernel<<<numBlocks, blockSize, sharedMemSize>>>(
             d_slamps_, d_amp_buffer, d_momenta_, d_decayNodes_, d_dj, d_dj1, d_dj2,
-            d_slCombination_, nSLCombs_, n_events, nPolarizations_, decayChain_.size(),
-            amp_size * nSLCombs_, start_event);
+            d_slCombination_, nSLCombs_, nEvents_, nPolarizations_, decayChain_.size(),
+            amp_size * nSLCombs_, n_events, start);
 
         cudaDeviceSynchronize();
 
@@ -522,6 +391,7 @@ void AmpCasDecay::computeSLAmps(const std::map<std::string, std::vector<LorentzV
         {
             std::cerr << "CUDA error in computeSLAmp: " << cudaGetErrorString(err) << std::endl;
         }
+
         cudaFree(d_amp_buffer);
     }
 
@@ -664,11 +534,12 @@ __global__ void computeSLAmpKernel(thrust::complex<double> *d_amp,
                                    int num_polar,
                                    int decayChain_size,
                                    int buffer_size_per_event,
-                                   int start_event)
+                                   int num_batchs,
+                                   int start_events)
 {
     int eventIdx = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (eventIdx >= num_events)
+    if (eventIdx >= num_batchs)
     {
         return;
     }
@@ -703,8 +574,8 @@ __global__ void computeSLAmpKernel(thrust::complex<double> *d_amp,
             int dj2 = d_dj2[nodeIdx];
 
             // 直接从设备内存获取四动量
-            LorentzVector pDaug1 = d_momenta->getMomentum(eventIdx, node.daug1_idx);
-            LorentzVector pDaug2 = d_momenta->getMomentum(eventIdx, node.daug2_idx);
+            LorentzVector pDaug1 = d_momenta->getMomentum(start_events + eventIdx, node.daug1_idx);
+            LorentzVector pDaug2 = d_momenta->getMomentum(start_events + eventIdx, node.daug2_idx);
 
             // 打印四动量
             // printf("Event %d, SL %d, Node %d: pDaug1 = (%f, %f, %f, %f), pDaug2 = (%f, %f, %f, %f)\n", eventIdx, slIdx, nodeIdx, pDaug1.E, pDaug1.Px, pDaug1.Py, pDaug1.Pz, pDaug2.E, pDaug2.Px, pDaug2.Py, pDaug2.Pz);
@@ -848,7 +719,7 @@ __global__ void computeSLAmpKernel(thrust::complex<double> *d_amp,
         }
 
         // d_amp按
-        thrust::complex<double> *event_final_amp = &d_amp[start_event + slIdx * num_events * num_polar + eventIdx * num_polar];
+        thrust::complex<double> *event_final_amp = &d_amp[slIdx * num_events * num_polar + (start_events + eventIdx) * num_polar];
         for (int i = 0; i < num_polar; ++i)
         {
             event_final_amp[i] = currentAmp[i];
@@ -860,7 +731,7 @@ __global__ void computeSLAmpKernel(thrust::complex<double> *d_amp,
     }
 }
 
-void AmpCasDecay::getAmps(cuDoubleComplex *d_amplitudes, const std::vector<Resonance> &resonances, const int site)
+void AmpCasDecay::getAmps(cuComplex *d_amplitudes, const std::vector<Resonance> &resonances, const int site)
 {
     // 分配设备内存用于共振态数组
     DeviceResonance *d_resonances;
@@ -896,9 +767,9 @@ void AmpCasDecay::getAmps(cuDoubleComplex *d_amplitudes, const std::vector<Reson
                cudaMemcpyHostToDevice);
 
     // 分配设备内存用于输出振幅
-    // cuDoubleComplex *d_amplitudes;
+    // cuComplex *d_amplitudes;
     // size_t total_amplitudes = nSLCombs_ * nEvents_ * nPolarizations_;
-    // cudaMalloc(&d_amplitudes, total_amplitudes * sizeof(cuDoubleComplex));
+    // cudaMalloc(&d_amplitudes, total_amplitudes * sizeof(cuComplex));
 
     // 设置核函数配置
     dim3 blockDim(256); // 每个块256个线程
@@ -934,16 +805,12 @@ void AmpCasDecay::getAmps(cuDoubleComplex *d_amplitudes, const std::vector<Reson
 
     // 释放共振态数组设备内存
     cudaFree(d_resonances);
-    // cudaFree(d_slamps_);
-    // cudaFree(d_momenta_);
-    // cudaFree(d_decayNodes_);
-    // cudaFree(d_slCombination_);
 
     // return d_amplitudes;
 }
 
 __global__ void computeAmpsKernel(
-    cuDoubleComplex *amplitudes,           // 输出振幅
+    cuComplex *amplitudes,                 // 输出振幅
     const DeviceMomenta *d_momenta,        // 所有事件的四动量数据
     const SL *slCombinations,              // SL组合数据
     const thrust::complex<double> *slamps, // SL振幅
@@ -962,7 +829,7 @@ __global__ void computeAmpsKernel(
     if (sl_idx >= nSLComb || event_idx >= nEvents)
         return;
 
-    thrust::complex<double> resAmp(1.0, 0.0);
+    thrust::complex<float> resAmp(1.0, 0.0);
 
     // 遍历衰变链中的每个节点
     for (int nodeIdx = 0; nodeIdx < decayChain_size; ++nodeIdx)
@@ -1040,7 +907,7 @@ __global__ void computeAmpsKernel(
         {
             if (current_res.type == ResModelType::BWR)
             {
-                resAmp *= BreitWigner(mm, current_res.params[0], current_res.params[1], sl.L, qq, q0);
+                resAmp *= BWR(mm, current_res.params[0], current_res.params[1], sl.L, qq, q0);
                 resAmp *= BlattWeisskopf(sl.L, qq, q0);
             }
             else if (current_res.type == ResModelType::ONE)
@@ -1060,17 +927,17 @@ __global__ void computeAmpsKernel(
     {
         int idx = sl_idx * nSLComb * nEvents + event_idx * nPolar + k;
         int amp_idx = site * nSLComb * nEvents * nPolar + idx;
-        thrust::complex<double> temp = slamps[idx] * resAmp;
-        amplitudes[amp_idx] = make_cuDoubleComplex(temp.real(), temp.imag());
+        thrust::complex<float> temp = resAmp * slamps[idx] * 100.0f;
+        amplitudes[amp_idx] = make_cuComplex(temp.real(), temp.imag());
 
-        // 打印slamps
+        // 打印
         // printf("Event %d, sl %d, Amp[%d] = (%f, %f i)\n", event_idx, sl_idx, k, temp.real(), temp.imag());
     }
 }
 
 // // Allocates device memory for amplitudes and returns pointer.
 // // Caller is responsible for freeing the returned device memory using cudaFree.
-// cuDoubleComplex *AmpCasDecay::getAmps(Resonance &resonance)
+// cuComplex *AmpCasDecay::getAmps(Resonance &resonance)
 // {
 //     DeviceResonance devRes;
 //     devRes.J = resonance.getJ();
@@ -1090,9 +957,9 @@ __global__ void computeAmpsKernel(
 //     }
 
 //     // 分配设备内存用于输出振幅
-//     cuDoubleComplex *d_amplitudes;
+//     cuComplex *d_amplitudes;
 //     size_t total_amplitudes = nSLCombs_ * nEvents_ * nPolarizations_;
-//     cudaMalloc(&d_amplitudes, total_amplitudes * sizeof(cuDoubleComplex));
+//     cudaMalloc(&d_amplitudes, total_amplitudes * sizeof(cuComplex));
 
 //     // 设置核函数配置
 //     dim3 blockDim(256); // 每个块256个线程
@@ -1126,7 +993,7 @@ __global__ void computeAmpsKernel(
 // }
 
 // __global__ void computeAmpsKernel(
-//     cuDoubleComplex *amplitudes,           // 输出振幅
+//     cuComplex *amplitudes,           // 输出振幅
 //     const DeviceMomenta *d_momenta,        // 所有事件的四动量数据
 //     const SL *slCombinations,              // SL组合数据
 //     const thrust::complex<double> *slamps, // SL振幅
@@ -1208,6 +1075,6 @@ __global__ void computeAmpsKernel(
 //         // printf("Event: %d, Polar: %d, SLAmps(%f, %f), ResAmp(%f, %f) \n", event_idx, k, slamps[idx].real(), slamps[idx].imag(), resAmp.real(), resAmp.imag());
 
 //         thrust::complex<double> temp = slamps[idx] * resAmp;
-//         amplitudes[idx] = make_cuDoubleComplex(temp.real(), temp.imag());
+//         amplitudes[idx] = make_cuComplex(temp.real(), temp.imag());
 //     }
 // }

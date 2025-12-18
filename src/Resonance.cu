@@ -93,7 +93,7 @@ __device__ inline double BlattWeisskopf(int L, double q, double q0)
     }
 }
 
-__device__ thrust::complex<double> BreitWigner(double m, double m0, double gamma0, int L, double q, double q0)
+__device__ thrust::complex<double> BWR(double m, double m0, double gamma0, int L, double q, double q0)
 {
     // 计算能量依赖的宽度
     const double gamma = gamma0 * pow(q / q0, 2 * L + 1) * (m0 / m) * pow(BlattWeisskopf(L, q, q0), 2);

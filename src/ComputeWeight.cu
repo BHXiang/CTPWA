@@ -8,7 +8,7 @@
 
 // // 核函数：计算复数模平方并按 npolar 分组求和
 // __global__ void computeModTotalWeight(
-//     const cuDoubleComplex *__restrict__ complex_result,
+//     const cuComplex *__restrict__ complex_result,
 //     double *__restrict__ final_result,
 //     int nEvents, int npolar)
 // {
@@ -23,7 +23,7 @@
 //     for (int polar_idx = 0; polar_idx < npolar; polar_idx++)
 //     {
 //         int global_idx = event_idx * npolar + polar_idx;
-//         cuDoubleComplex val = complex_result[global_idx];
+//         cuComplex val = complex_result[global_idx];
 //         double mod_square = val.x * val.x + val.y * val.y;
 //         sum += mod_square;
 //     }
@@ -33,7 +33,7 @@
 
 // 核函数：计算复数模平方并按 npolar 分组求和，同时计算总和
 __global__ void computeModTotalWeight(
-    const cuDoubleComplex *__restrict__ complex_result,
+    const cuComplex *__restrict__ complex_result,
     double *__restrict__ final_result,
     double *__restrict__ total_sum,
     int nEvents, int npolar)
@@ -49,7 +49,7 @@ __global__ void computeModTotalWeight(
     for (int polar_idx = 0; polar_idx < npolar; polar_idx++)
     {
         int global_idx = event_idx * npolar + polar_idx;
-        cuDoubleComplex val = complex_result[global_idx];
+        cuComplex val = complex_result[global_idx];
         double mod_square = val.x * val.x + val.y * val.y;
         sum += mod_square;
     }
@@ -61,8 +61,8 @@ __global__ void computeModTotalWeight(
 }
 
 // __global__ void computeModPartialWeight(
-//     const cuDoubleComplex *__restrict__ complex_matrix,
-//     const cuDoubleComplex *__restrict__ complex_vector,
+//     const cuComplex *__restrict__ complex_matrix,
+//     const cuComplex *__restrict__ complex_vector,
 //     double *__restrict__ final_result,
 //     int *d_nSLvectors,
 //     int npartials,
@@ -85,10 +85,10 @@ __global__ void computeModTotalWeight(
 //             for (int polar_idx = 0; polar_idx < nSL; polar_idx++)
 //             {
 //                 int global_idx = sltotal * nEvents * npolar + event_idx * npolar + polar_idx;
-//                 cuDoubleComplex val = complex_matrix[global_idx];
-//                 cuDoubleComplex vec_val = complex_vector[polar_idx];
+//                 cuComplex val = complex_matrix[global_idx];
+//                 cuComplex vec_val = complex_vector[polar_idx];
 //                 // 计算矩阵元素与向量元素的乘积
-//                 cuDoubleComplex prod = cuCmul(val, vec_val);
+//                 cuComplex prod = cuCmul(val, vec_val);
 //                 double mod_square = prod.x * prod.x + prod.y * prod.y;
 //                 partial_sum += mod_square;
 //             }
@@ -101,8 +101,8 @@ __global__ void computeModTotalWeight(
 // }
 
 __global__ void computeModPartialWeight(
-    const cuDoubleComplex *__restrict__ complex_matrix,
-    const cuDoubleComplex *__restrict__ complex_vector,
+    const cuComplex *__restrict__ complex_matrix,
+    const cuComplex *__restrict__ complex_vector,
     double *__restrict__ final_result,
     double *__restrict__ partial_sums,
     int *d_nSLvectors,
@@ -137,9 +137,9 @@ __global__ void computeModPartialWeight(
                 for (int polar_idx = 0; polar_idx < npolar; polar_idx++)
                 {
                     int global_idx = sltotal * nEvents * npolar + event_idx * npolar + polar_idx;
-                    cuDoubleComplex val = complex_matrix[global_idx];
-                    cuDoubleComplex vec_val = complex_vector[p_idx * nSL + sl_idx];
-                    cuDoubleComplex prod = cuCmul(val, vec_val);
+                    cuComplex val = complex_matrix[global_idx];
+                    cuComplex vec_val = complex_vector[p_idx * nSL + sl_idx];
+                    cuComplex prod = cuCmulf(val, vec_val);
                     // printf("Event %d, Partial %d, SL %d, Polar %d: Matrix Element = (%f, %f i), Vector Element = (%f, %f i), Product = (%f, %f i)\n", event_idx, p_idx, sl_idx, polar_idx, val.x, val.y, vec_val.x, vec_val.y, prod.x, prod.y);
                     double mod_square = prod.x * prod.x + prod.y * prod.y;
                     partial_sum += mod_square;
@@ -170,8 +170,8 @@ __global__ void computeModPartialWeight(
 }
 
 void computeWeightResult(
-    const cuDoubleComplex *d_matrix,
-    const cuDoubleComplex *d_vector,
+    const cuComplex *d_matrix,
+    const cuComplex *d_vector,
     double *d_total_result,
     double *d_total_integral,
     double *d_partial_result,
@@ -184,14 +184,14 @@ void computeWeightResult(
     cublasCreate(&handle);
 
     // 分配设备内存
-    cuDoubleComplex *d_complex_result = nullptr;
-    cudaMalloc(&d_complex_result, nEvents * npolar * sizeof(cuDoubleComplex));
+    cuComplex *d_complex_result = nullptr;
+    cudaMalloc(&d_complex_result, nEvents * npolar * sizeof(cuComplex));
 
     // cuBLAS 矩阵向量乘法
-    const cuDoubleComplex alpha = make_cuDoubleComplex(1.0, 0.0);
-    const cuDoubleComplex beta = make_cuDoubleComplex(0.0, 0.0);
+    const cuComplex alpha = make_cuComplex(1.0, 0.0);
+    const cuComplex beta = make_cuComplex(0.0, 0.0);
 
-    cublasZgemv(handle, CUBLAS_OP_N, nEvents * npolar, ngls, &alpha,
+    cublasCgemv(handle, CUBLAS_OP_N, nEvents * npolar, ngls, &alpha,
                 d_matrix, nEvents * npolar, d_vector, 1, &beta, d_complex_result, 1);
 
     // 检查 cuBLAS 调用
@@ -228,8 +228,8 @@ void computeWeightResult(
 }
 
 // void computeWeightResult(
-//     const cuDoubleComplex *d_matrix,
-//     const cuDoubleComplex *d_vector,
+//     const cuComplex *d_matrix,
+//     const cuComplex *d_vector,
 //     double *d_total_result,
 //     double *d_total_integral,
 //     double *d_partial_result,
@@ -241,17 +241,17 @@ void computeWeightResult(
 //     cublasCreate(&handle);
 
 //     // 分配设备内存
-//     cuDoubleComplex *d_complex_result = nullptr;
-//     cudaMalloc(&d_complex_result, nEvents * npolar * sizeof(cuDoubleComplex));
+//     cuComplex *d_complex_result = nullptr;
+//     cudaMalloc(&d_complex_result, nEvents * npolar * sizeof(cuComplex));
 
 //     // cuBLAS 矩阵向量乘法参数
-//     const cuDoubleComplex alpha = make_cuDoubleComplex(1.0, 0.0);
-//     const cuDoubleComplex beta = make_cuDoubleComplex(0.0, 0.0);
+//     const cuComplex alpha = make_cuComplex(1.0, 0.0);
+//     const cuComplex beta = make_cuComplex(0.0, 0.0);
 
 //     // 执行矩阵向量乘法: complex_result = matrix * vector
 //     // 注意：cuBLAS 使用列主序，所以我们需要适当调整参数
 //     // 如果矩阵是行主序的 M x N 矩阵，在 cuBLAS 中相当于列主序的 N x M 矩阵的转置
-//     cublasZgemv(handle, CUBLAS_OP_N, nEvents * npolar, ngls, &alpha, d_matrix, nEvents * npolar, d_vector, 1, &beta, d_complex_result, 1);
+//     cublasCgemv(handle, CUBLAS_OP_N, nEvents * npolar, ngls, &alpha, d_matrix, nEvents * npolar, d_vector, 1, &beta, d_complex_result, 1);
 
 //     // 检查 cuBLAS 调用是否成功
 //     cudaError_t cuda_error = cudaGetLastError();

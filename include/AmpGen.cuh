@@ -108,7 +108,8 @@ private:
 
     void addParticleIfNotExists(const std::string &name, int spin, int parity, double mass);
     // void computeNPolarizations_(const std::map<std::string, std::vector<LorentzVector>> &finalMomenta);
-    DeviceMomenta *convertToDeviceMomenta(const std::map<std::string, std::vector<LorentzVector>> &finalMomenta, const std::map<std::string, int> &particleToIndex, const std::vector<DecayNodeHost> &decayChain, int start_event, int batch_size);
+    // DeviceMomenta *convertToDeviceMomenta(const std::map<std::string, std::vector<LorentzVector>> &finalMomenta, const std::map<std::string, int> &particleToIndex, const std::vector<DecayNodeHost> &decayChain, int start_event, int batch_size);
+    DeviceMomenta *convertToDeviceMomenta(const std::map<std::string, std::vector<LorentzVector>> &finalMomenta, const std::map<std::string, int> &particleToIndex, const std::vector<DecayNodeHost> &decayChain);
 
 public:
     AmpCasDecay(const std::vector<Particle> &particles);
@@ -121,8 +122,8 @@ public:
 
     void computeSLAmps(const std::map<std::string, std::vector<LorentzVector>> &finalMomenta);
     // void getAmps(Resonance &resonance);
-    // cuDoubleComplex *getAmps(const std::vector<Resonance> &resonances);
-    void getAmps(cuDoubleComplex *d_amplitudes, const std::vector<Resonance> &resonances, const int site);
+    // cuComplex *getAmps(const std::vector<Resonance> &resonances);
+    void getAmps(cuComplex *d_amplitudes, const std::vector<Resonance> &resonances, const int site);
 
     // Getter函数
     size_t getNSLCombs() const { return nSLCombs_; }
@@ -139,10 +140,11 @@ __global__ void computeSLAmpKernel(
     const int *d_dj, const int *d_dj1, const int *d_dj2,
     const SL *d_slCombination,
     int num_sl, int num_events, int num_polar,
-    int decayChain_size, int buffer_size_per_event, int start_event);
+    // int decayChain_size, int buffer_size_per_event);
+    int decayChain_size, int buffer_size_per_event, int num_batchs, int start_event);
 
 __global__ void computeAmpsKernel(
-    cuDoubleComplex *amplitudes,           // 输出振幅
+    cuComplex *amplitudes,                 // 输出振幅
     const DeviceMomenta *d_momenta,        // 所有事件的四动量数据
     const SL *slCombinations,              // SL组合数据
     const thrust::complex<double> *slamps, // SL振幅

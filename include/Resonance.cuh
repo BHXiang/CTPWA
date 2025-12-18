@@ -72,6 +72,6 @@ __device__ double BlattWeisskopf(int L, double q, double q0);
 
 __device__ thrust::complex<double> BreitWigner(double m, double m0, double gamma0, int L, double q, double q0);
 
-// __global__ void computeAmpsKernel(cuDoubleComplex *amplitudes, const DeviceMomenta *d_momenta, const SL *slCombinations, const thrust::complex<double> *slamps, const DeviceResonance resonance, const DecayNode *decayChain, int decayChain_size, int nEvents, int nSLComb, int nPolar)
+// __global__ void computeAmpsKernel(cuComplex *amplitudes, const DeviceMomenta *d_momenta, const SL *slCombinations, const thrust::complex<double> *slamps, const DeviceResonance resonance, const DecayNode *decayChain, int decayChain_size, int nEvents, int nSLComb, int nPolar)
 
 #endif // RESONANCE_H

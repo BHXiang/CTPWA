@@ -904,11 +904,11 @@ private:
 
 public:
 	// 主要的振幅计算方法
-	cuDoubleComplex *calculateAmplitudes(
+	cuComplex *calculateAmplitudes(
 		const std::map<std::string, std::vector<LorentzVector>> &Vp4,
 		const int print_flag)
 	{
-		// std::vector<cuDoubleComplex *> all_amplitudes;
+		// std::vector<cuComplex *> all_amplitudes;
 		resetAmplitudeTracking();
 		// std::vector<int> nSLvectors;
 
@@ -1095,9 +1095,9 @@ public:
 
 		int n_events = Vp4.begin()->second.size();
 		// int amplitude_size = n_events * nPolar_;
-		cuDoubleComplex *d_all_amplitudes;
+		cuComplex *d_all_amplitudes;
 		const size_t total_amplitudes = nGls * n_events * nPolar_;
-		cudaMalloc(&d_all_amplitudes, total_amplitudes * sizeof(cuDoubleComplex));
+		cudaMalloc(&d_all_amplitudes, total_amplitudes * sizeof(cuComplex));
 
 		// std::cout << "Total amplitudes (nGls): " << nGls << std::endl;
 		// std::cout << n_events << " " << nPolar_ << std::endl;
@@ -1235,7 +1235,7 @@ public:
 						// resforAmp.push_back(it->second);
 					}
 
-					// cuDoubleComplex *amp = cas.getAmps(resforAmp);
+					// cuComplex *amp = cas.getAmps(resforAmp);
 					// all_amplitudes.push_back(amp);
 					cas.getAmps(d_all_amplitudes, resforAmp, gls_index);
 					nSLvectors_.push_back(nSLcombs);
@@ -1257,7 +1257,7 @@ public:
 		// std::cout << __LINE__ << std::endl;
 
 		// 合并所有振幅到设备内存
-		// cuDoubleComplex *device_result = combineAmplitudesDevice(all_amplitudes, amplitude_size, nSLvectors_);
+		// cuComplex *device_result = combineAmplitudesDevice(all_amplitudes, amplitude_size, nSLvectors_);
 
 		// 清理临时设备内存
 		// cleanupTemporaryAmplitudes(all_amplitudes);
@@ -1323,7 +1323,7 @@ private:
 		}
 	}
 
-	cuDoubleComplex *combineAmplitudesDevice(const std::vector<cuDoubleComplex *> &amplitudes, int amplitude_size, const std::vector<int> &nSLvectors)
+	cuComplex *combineAmplitudesDevice(const std::vector<cuComplex *> &amplitudes, int amplitude_size, const std::vector<int> &nSLvectors)
 	{
 		if (amplitudes.empty() || amplitudes.size() != nSLvectors.size())
 		{
@@ -1337,9 +1337,9 @@ private:
 			total_size += nSLvectors[i] * amplitude_size;
 		}
 
-		cuDoubleComplex *combined_device = nullptr;
+		cuComplex *combined_device = nullptr;
 
-		cudaError_t cudaStatus = cudaMalloc(&combined_device, total_size * sizeof(cuDoubleComplex));
+		cudaError_t cudaStatus = cudaMalloc(&combined_device, total_size * sizeof(cuComplex));
 		if (cudaStatus != cudaSuccess)
 		{
 			std::cerr << "cudaMalloc failed! Error: " << cudaGetErrorString(cudaStatus) << std::endl;
@@ -1362,7 +1362,7 @@ private:
 
 			cudaStatus = cudaMemcpy(combined_device + current_offset,
 									amplitudes[i],
-									current_size * sizeof(cuDoubleComplex),
+									current_size * sizeof(cuComplex),
 									cudaMemcpyDeviceToDevice);
 			if (cudaStatus != cudaSuccess)
 			{
@@ -1377,7 +1377,7 @@ private:
 		return combined_device;
 	}
 
-	void cleanupTemporaryAmplitudes(std::vector<cuDoubleComplex *> &amplitudes)
+	void cleanupTemporaryAmplitudes(std::vector<cuComplex *> &amplitudes)
 	{
 		for (auto ptr : amplitudes)
 		{
@@ -1407,10 +1407,10 @@ public:
 class NLLFunction : public torch::autograd::Function<NLLFunction>
 {
 public:
-	static torch::Tensor forward(torch::autograd::AutogradContext *ctx, torch::Tensor &vector, int n_gls_, int n_polar_, const cuDoubleComplex *data_fix_, int data_length, const cuDoubleComplex *phsp_fix_, int phsp_length, const cuDoubleComplex *bkg_fix_, int bkg_length, std::vector<std::pair<int, int>> conjugate_pairs_)
+	static torch::Tensor forward(torch::autograd::AutogradContext *ctx, torch::Tensor &vector, int n_gls_, int n_polar_, const cuComplex *data_fix_, int data_length, const cuComplex *phsp_fix_, int phsp_length, const cuComplex *bkg_fix_, int bkg_length, std::vector<std::pair<int, int>> conjugate_pairs_)
 	{
 		TORCH_CHECK(vector.is_cuda(), "[NLLForward] vector must be on CUDA");
-		TORCH_CHECK(vector.dtype() == c10::kComplexDouble, "[NLLForward] vector must be complex128");
+		TORCH_CHECK(vector.dtype() == c10::kComplexFloat, "[NLLForward] vector must be complex64");
 
 		// 获取当前设备并设置
 		const int target_dev = vector.get_device();
@@ -1421,44 +1421,44 @@ public:
 		const int extended_n_gls = extended_vector.numel();
 
 		// 后续逻辑（MC因子计算等）
-		cuDoubleComplex *d_B = nullptr;
+		cuComplex *d_B = nullptr;
 		double *d_mc_amp = nullptr;
-		cudaMalloc(&d_B, phsp_length * sizeof(cuDoubleComplex));
+		cudaMalloc(&d_B, phsp_length * sizeof(cuComplex));
 		cudaMalloc(&d_mc_amp, sizeof(double));
 
-		// computeSingleResult(phsp_fix_, reinterpret_cast<const cuDoubleComplex *>(extended_vector.data_ptr()), d_B, d_mc_amp, phsp_length, extended_n_gls);
-		computePHSPfactor(phsp_fix_, reinterpret_cast<const cuDoubleComplex *>(extended_vector.data_ptr()), d_B, d_mc_amp, phsp_length, extended_n_gls);
+		// computeSingleResult(phsp_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_B, d_mc_amp, phsp_length, extended_n_gls);
+		computePHSPfactor(phsp_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_B, d_mc_amp, phsp_length, extended_n_gls);
 
 		double h_phsp_factor;
 		cudaMemcpy(&h_phsp_factor, d_mc_amp, sizeof(double), cudaMemcpyDeviceToHost);
 		h_phsp_factor = h_phsp_factor / static_cast<double>(phsp_length / n_polar_);
 
 		// NLL计算
-		cuDoubleComplex *d_S = nullptr;
-		cuDoubleComplex *d_Q = nullptr;
+		cuComplex *d_S = nullptr;
+		cuComplex *d_Q = nullptr;
 		double *d_data_nll = nullptr;
 		const int Q_numel = data_length / n_polar_;
-		cudaMalloc(&d_S, data_length * sizeof(cuDoubleComplex));
-		cudaMalloc(&d_Q, Q_numel * sizeof(cuDoubleComplex));
+		cudaMalloc(&d_S, data_length * sizeof(cuComplex));
+		cudaMalloc(&d_Q, Q_numel * sizeof(cuComplex));
 		cudaMalloc(&d_data_nll, sizeof(double));
 
-		computeNll(data_fix_, reinterpret_cast<const cuDoubleComplex *>(extended_vector.data_ptr()), d_S, d_Q, d_data_nll, data_length, extended_n_gls, n_polar_, h_phsp_factor);
+		computeNll(data_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_S, d_Q, d_data_nll, data_length, extended_n_gls, n_polar_, h_phsp_factor);
 
 		double h_data_nll;
 		cudaMemcpy(&h_data_nll, d_data_nll, sizeof(double), cudaMemcpyDeviceToHost);
 
 		// bkg部分
-		cuDoubleComplex *d_bkg_S = nullptr;
-		cuDoubleComplex *d_bkg_Q = nullptr;
+		cuComplex *d_bkg_S = nullptr;
+		cuComplex *d_bkg_Q = nullptr;
 		double *d_bkg_nll = nullptr;
 		const int bkg_Q_numel = bkg_length / n_polar_;
-		cudaMalloc(&d_bkg_S, bkg_length * sizeof(cuDoubleComplex));
-		cudaMalloc(&d_bkg_Q, bkg_Q_numel * sizeof(cuDoubleComplex));
+		cudaMalloc(&d_bkg_S, bkg_length * sizeof(cuComplex));
+		cudaMalloc(&d_bkg_Q, bkg_Q_numel * sizeof(cuComplex));
 		cudaMalloc(&d_bkg_nll, sizeof(double));
 		double h_bkg_nll = 0.0;
 		if (bkg_fix_ != nullptr && bkg_length > 0)
 		{
-			computeNll(bkg_fix_, reinterpret_cast<const cuDoubleComplex *>(extended_vector.data_ptr()), d_bkg_S, d_bkg_Q, d_bkg_nll, bkg_length, extended_n_gls, n_polar_, h_phsp_factor);
+			computeNll(bkg_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_bkg_S, d_bkg_Q, d_bkg_nll, bkg_length, extended_n_gls, n_polar_, h_phsp_factor);
 
 			cudaMemcpy(&h_bkg_nll, d_bkg_nll, sizeof(double), cudaMemcpyDeviceToHost);
 		}
@@ -1527,18 +1527,18 @@ public:
 		}
 
 		// 从 saved_data 获取显存指针
-		cuDoubleComplex *d_B = reinterpret_cast<cuDoubleComplex *>(ctx->saved_data["d_B_ptr"].toInt());
-		cuDoubleComplex *data_fix = reinterpret_cast<cuDoubleComplex *>(ctx->saved_data["data_fix_ptr"].toInt());
-		cuDoubleComplex *phsp_fix = reinterpret_cast<cuDoubleComplex *>(ctx->saved_data["phsp_fix_ptr"].toInt());
-		cuDoubleComplex *d_S = reinterpret_cast<cuDoubleComplex *>(ctx->saved_data["d_S_ptr"].toInt());
-		cuDoubleComplex *d_Q = reinterpret_cast<cuDoubleComplex *>(ctx->saved_data["d_Q_ptr"].toInt());
+		cuComplex *d_B = reinterpret_cast<cuComplex *>(ctx->saved_data["d_B_ptr"].toInt());
+		cuComplex *data_fix = reinterpret_cast<cuComplex *>(ctx->saved_data["data_fix_ptr"].toInt());
+		cuComplex *phsp_fix = reinterpret_cast<cuComplex *>(ctx->saved_data["phsp_fix_ptr"].toInt());
+		cuComplex *d_S = reinterpret_cast<cuComplex *>(ctx->saved_data["d_S_ptr"].toInt());
+		cuComplex *d_Q = reinterpret_cast<cuComplex *>(ctx->saved_data["d_Q_ptr"].toInt());
 
 		// // 获取背景数据的指针（如果存在）
 		// if (bkg_length > 0)
 		// {
-		cuDoubleComplex *bkg_fix = reinterpret_cast<cuDoubleComplex *>(ctx->saved_data["bkg_fix_ptr"].toInt());
-		cuDoubleComplex *d_bkg_S = reinterpret_cast<cuDoubleComplex *>(ctx->saved_data["d_bkg_S_ptr"].toInt());
-		cuDoubleComplex *d_bkg_Q = reinterpret_cast<cuDoubleComplex *>(ctx->saved_data["d_bkg_Q_ptr"].toInt());
+		cuComplex *bkg_fix = reinterpret_cast<cuComplex *>(ctx->saved_data["bkg_fix_ptr"].toInt());
+		cuComplex *d_bkg_S = reinterpret_cast<cuComplex *>(ctx->saved_data["d_bkg_S_ptr"].toInt());
+		cuComplex *d_bkg_Q = reinterpret_cast<cuComplex *>(ctx->saved_data["d_bkg_Q_ptr"].toInt());
 		// }
 
 		// 获取保存的变量
@@ -1547,8 +1547,8 @@ public:
 		const auto &extended_vector = saved[1];
 
 		// 计算扩展向量的梯度
-		cuDoubleComplex *d_extended_grad = nullptr;
-		cudaMalloc(&d_extended_grad, extended_n_gls * sizeof(cuDoubleComplex));
+		cuComplex *d_extended_grad = nullptr;
+		cudaMalloc(&d_extended_grad, extended_n_gls * sizeof(cuComplex));
 
 		cublasHandle_t cublas_handle;
 		cublasCreate(&cublas_handle);
@@ -1557,11 +1557,11 @@ public:
 		// 如果有背景数据，减去背景NLL的梯度
 		if (bkg_fix != nullptr && bkg_length > 0)
 		{
-			cuDoubleComplex *d_bkg_extended_grad = nullptr;
-			cudaMalloc(&d_bkg_extended_grad, extended_n_gls * sizeof(cuDoubleComplex));
+			cuComplex *d_bkg_extended_grad = nullptr;
+			cudaMalloc(&d_bkg_extended_grad, extended_n_gls * sizeof(cuComplex));
 
 			// 初始化背景梯度为0
-			cudaMemset(d_bkg_extended_grad, 0, extended_n_gls * sizeof(cuDoubleComplex));
+			cudaMemset(d_bkg_extended_grad, 0, extended_n_gls * sizeof(cuComplex));
 
 			// 计算背景NLL的梯度
 			compute_gradient(bkg_fix, phsp_fix, d_bkg_S, d_bkg_Q, d_B, h_phsp_factor,
@@ -1570,18 +1570,27 @@ public:
 
 			// 从数据梯度中减去背景梯度：∇L = ∇(data_nll) - ∇(bkg_nll)
 			// 使用cublas的向量减法操作
-			const cuDoubleComplex minus_one = make_cuDoubleComplex(-1.0, 0.0);
-			cublasZaxpy(cublas_handle, extended_n_gls,
+			const cuComplex minus_one = make_cuComplex(-1.0f, 0.0f);
+			cublasCaxpy(cublas_handle, extended_n_gls,
 						&minus_one, d_bkg_extended_grad, 1,
 						d_extended_grad, 1);
 
 			cudaFree(d_bkg_extended_grad);
+			cudaFree(d_bkg_S);
+			cudaFree(d_bkg_Q);
 		}
 
+		// 		// 输出d_extended_grad以供调试
+		// torch::Tensor debug_extended_grad = torch::empty({extended_n_gls}, torch::kComplexFloat).to(original_vector.device());
+		// cudaMemcpy(debug_extended_grad.data_ptr(), d_extended_grad,
+		// 		   extended_n_gls * sizeof(cuComplex),
+		// 		   cudaMemcpyDeviceToDevice);
+		// std::cout << "Debug extended_grad: " << debug_extended_grad << std::endl;
+
 		// 将扩展梯度的共轭部分合并回原始梯度
-		torch::Tensor extended_grad = torch::empty({extended_n_gls}, torch::kComplexDouble).to(original_vector.device());
+		torch::Tensor extended_grad = torch::empty({extended_n_gls}, torch::kComplexFloat).to(original_vector.device());
 		cudaMemcpy(extended_grad.data_ptr(), d_extended_grad,
-				   extended_n_gls * sizeof(cuDoubleComplex),
+				   extended_n_gls * sizeof(cuComplex),
 				   cudaMemcpyDeviceToDevice);
 
 		torch::Tensor grad_vector = mergeGradientsWithConjugates(extended_grad, conjugate_pairs, original_vector.numel());
@@ -1616,7 +1625,7 @@ private:
 		}
 
 		// 创建扩展后的向量
-		torch::Tensor extended_vector = torch::zeros({extended_size}, torch::kComplexDouble).to(device);
+		torch::Tensor extended_vector = torch::zeros({extended_size}, torch::kComplexFloat).to(device);
 
 		// 复制原始向量到扩展向量
 		extended_vector.slice(0, 0, original_size) = vector;
@@ -1643,7 +1652,7 @@ private:
 													  const std::vector<std::pair<int, int>> &conjugate_pairs,
 													  int original_size)
 	{
-		torch::Tensor grad_vector = torch::zeros({original_size}, torch::kComplexDouble).to(extended_grad.device());
+		torch::Tensor grad_vector = torch::zeros({original_size}, torch::kComplexFloat).to(extended_grad.device());
 
 		// 复制直接梯度
 		grad_vector = extended_grad.slice(0, 0, original_size);
@@ -1781,7 +1790,7 @@ public:
 	void writeWeightFile(torch::Tensor &vector, const std::string &filename)
 	{
 		TORCH_CHECK(vector.is_cuda(), "vector must be on CUDA");
-		TORCH_CHECK(vector.dtype() == torch::kComplexDouble, "vector must be complex128");
+		TORCH_CHECK(vector.dtype() == torch::kComplexFloat, "vector must be complex128");
 
 		const int original_size = vector.numel();
 		int extended_size = original_size;
@@ -1801,7 +1810,7 @@ public:
 		// }
 
 		// 创建扩展后的向量
-		torch::Tensor extended_vector = torch::zeros({extended_size}, torch::kComplexDouble).to(dev);
+		torch::Tensor extended_vector = torch::zeros({extended_size}, torch::kComplexFloat).to(dev);
 
 		// 复制原始向量到扩展向量
 		extended_vector.slice(0, 0, original_size) = vector;
@@ -1850,7 +1859,7 @@ public:
 		cudaMemset(d_total_integral, 0, sizeof(double));
 
 		// 计算权重
-		computeWeightResult(phsp_fix_, reinterpret_cast<const cuDoubleComplex *>(extended_vector.data_ptr()), d_final_result, d_total_integral, d_partial_result, d_partial_sum, d_nSLvectors, npartials, n_events, n_gls_, n_polar_);
+		computeWeightResult(phsp_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_final_result, d_total_integral, d_partial_result, d_partial_sum, d_nSLvectors, npartials, n_events, n_gls_, n_polar_);
 
 		double *h_total_results = new double[n_events];
 		cudaMemcpy(h_total_results, d_final_result, n_events * sizeof(double), cudaMemcpyDeviceToHost);
@@ -2007,12 +2016,12 @@ public:
 	torch::Tensor getDataTensor() const
 	{
 		std::vector<std::complex<double>> host_array(data_length * n_gls_);
-		cudaMemcpy(host_array.data(), data_fix_, data_length * n_gls_ * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost);
+		cudaMemcpy(host_array.data(), data_fix_, data_length * n_gls_ * sizeof(cuComplex), cudaMemcpyDeviceToHost);
 
 		// std::cout << "debug " << host_array[0] << std::endl;
 
-		torch::Tensor output = torch::empty({data_length * n_gls_}, dtype(torch::kComplexDouble));
-		output.copy_(torch::from_blob(host_array.data(), {data_length * n_gls_}, torch::kComplexDouble));
+		torch::Tensor output = torch::empty({data_length * n_gls_}, dtype(torch::kComplexFloat));
+		output.copy_(torch::from_blob(host_array.data(), {data_length * n_gls_}, torch::kComplexFloat));
 
 		// cudaFree(host_array);
 
@@ -2022,12 +2031,12 @@ public:
 	torch::Tensor getPhspTensor() const
 	{
 		std::vector<std::complex<double>> host_array(phsp_length * n_gls_);
-		cudaMemcpy(host_array.data(), phsp_fix_, phsp_length * n_gls_ * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost);
+		cudaMemcpy(host_array.data(), phsp_fix_, phsp_length * n_gls_ * sizeof(cuComplex), cudaMemcpyDeviceToHost);
 
 		// std::cout << "debug " << host_array[0] << std::endl;
 
-		torch::Tensor output = torch::empty({phsp_length * n_gls_}, dtype(torch::kComplexDouble));
-		output.copy_(torch::from_blob(host_array.data(), {phsp_length * n_gls_}, torch::kComplexDouble));
+		torch::Tensor output = torch::empty({phsp_length * n_gls_}, dtype(torch::kComplexFloat));
+		output.copy_(torch::from_blob(host_array.data(), {phsp_length * n_gls_}, torch::kComplexFloat));
 
 		// cudaFree(host_array);
 
@@ -2037,12 +2046,12 @@ public:
 	torch::Tensor getBkgTensor() const
 	{
 		std::vector<std::complex<double>> host_array(bkg_length);
-		cudaMemcpy(host_array.data(), bkg_fix_, bkg_length * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost);
+		cudaMemcpy(host_array.data(), bkg_fix_, bkg_length * sizeof(cuComplex), cudaMemcpyDeviceToHost);
 
 		// std::cout << "debug " << host_array[0] << std::endl;
 
-		torch::Tensor output = torch::empty({bkg_length}, dtype(torch::kComplexDouble));
-		output.copy_(torch::from_blob(host_array.data(), {bkg_length}, torch::kComplexDouble));
+		torch::Tensor output = torch::empty({bkg_length}, dtype(torch::kComplexFloat));
+		output.copy_(torch::from_blob(host_array.data(), {bkg_length}, torch::kComplexFloat));
 
 		// cudaFree(host_array);
 
@@ -2063,11 +2072,11 @@ private:
 	int n_gls_;
 	int n_polar_;
 	std::vector<int> nSLvectors_;
-	cuDoubleComplex *data_fix_;
+	cuComplex *data_fix_;
 	int data_length;
-	cuDoubleComplex *phsp_fix_;
+	cuComplex *phsp_fix_;
 	int phsp_length;
-	cuDoubleComplex *bkg_fix_;
+	cuComplex *bkg_fix_;
 	int bkg_length;
 
 	// 四动量数据
@@ -2104,6 +2113,8 @@ private:
 		n_gls_ = calculator.getNAmplitudes();
 		n_polar_ = calculator.getNPolarization(); // 假设每个事件有3个极化状态
 		phsp_length = Vp4_phsp_.begin()->second.size() * n_polar_;
+
+		// std::cout << "Number of amplitudes (n_gls_): " << n_gls_ << std::endl;
 
 		// 读取数据
 		std::cout << "Reading data..." << std::endl;

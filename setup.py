@@ -66,14 +66,12 @@ extension = CUDAExtension(
     include_dirs=[
         os.path.join(project_dir, 'include'),
         root_flags['include'],  # ROOT 头文件目录
-        os.path.join(root_dir, 'include'),  # 系统头文件
         os.path.join(cuda_dir, 'include'),
         # Conda 头文件（如果存在）
         *([os.path.join(conda_prefix, 'include')] if conda_prefix else []),
     ],
     library_dirs=[
         root_flags['libdir'],  # ROOT 库目录
-        os.path.join(root_dir, 'lib64'),  # 系统库目录
         os.path.join(cuda_dir, 'lib64'),
         # Conda 库目录（如果存在）
         *([os.path.join(conda_prefix, 'lib')] if conda_prefix else []),
