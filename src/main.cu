@@ -5,4 +5,5 @@
 #include "ComputeNLL.cu"
 #include "ComputeGrad.cu"
 #include "ComputeWeight.cu"
+#include "Config.cu"
 #include "PartialWaveMain.cu"

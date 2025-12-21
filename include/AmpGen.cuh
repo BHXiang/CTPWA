@@ -3,7 +3,9 @@
 
 #include <Resonance.cuh>
 #include <helicity.cuh>
+#include <Config.cuh>
 
+#include <unordered_map>
 #include <vector>
 #include <map>
 #include <set>
@@ -24,15 +26,15 @@ struct SL
     __host__ __device__ SL(int s = 0, int l = 0) : S(s), L(l) {}
 };
 
-// 粒子信息结构体
-struct Particle
-{
-    std::string name;
-    int spin;
-    int parity;
-    double mass;
-    std::string tex;
-};
+// // 粒子信息结构体
+// struct Particle
+// {
+//     std::string name;
+//     int spin;
+//     int parity;
+//     double mass;
+//     std::string tex;
+// };
 
 // 衰变节点结构体
 struct DecayNode
@@ -157,4 +159,4 @@ __global__ void computeAmpsKernel(
     int nPolar,
     int site);
 
-#endif // AMPGEN_H
+#endif // AMPGEN_CUH
