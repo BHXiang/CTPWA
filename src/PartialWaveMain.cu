@@ -1204,7 +1204,7 @@ private:
 				for (const auto resonance : resonance_combinations)
 				{
 					cas.getAmps(d_all_amplitudes, resonance, gls_index);
-					gls_index += nSLcombs;
+					gls_index += 1;
 				}
 			}
 		}

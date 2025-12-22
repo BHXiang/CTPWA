@@ -774,8 +774,11 @@ void AmpCasDecay::getAmps(cuComplex *d_amplitudes, const std::vector<Resonance> 
     // 设置核函数配置
     dim3 blockDim(256); // 每个块256个线程
     dim3 gridDim(nSLCombs_, (nEvents_ + blockDim.x - 1) / blockDim.x);
+    // int blockSize = 256; // 每个块256个线程
+    // int numBlocks = (nEvents_ + blockSize - 1) / blockSize;
 
     // 调用核函数计算振幅
+    // computeAmpsKernel<<<numBlocks, blockSize>>>(
     computeAmpsKernel<<<gridDim, blockDim>>>(
         d_amplitudes,       // 输出振幅
         d_momenta_,         // 四动量数据
@@ -823,11 +826,18 @@ __global__ void computeAmpsKernel(
     int nPolar,
     int site)
 {
-    int sl_idx = blockIdx.x;                               // SL组合索引
-    int event_idx = threadIdx.x + blockDim.x * blockIdx.y; // 事件索引
+    // int event_idx = threadIdx.x * blockDim.x + threadIdx.x;
+    int sl_idx = blockIdx.x;
+    int event_idx = threadIdx.x + blockDim.x * blockIdx.y;
 
     if (sl_idx >= nSLComb || event_idx >= nEvents)
+    {
+        // if (event_idx >= nEvents)
         return;
+    }
+
+    // for (int sl_idx = 0; sl_idx < nSLComb; ++sl_idx)
+    // {
 
     thrust::complex<float> resAmp(1.0, 0.0);
 
@@ -899,6 +909,7 @@ __global__ void computeAmpsKernel(
         {
             // 第一个节点特殊处理
             resAmp *= BlattWeisskopf(sl.L, qq, q0);
+            // printf("Event %d, sl %d, First Node: L=%d, qq=%f, q0=%f, BW Factor=(%f, %f i)\n", event_idx, sl_idx, sl.L, qq, q0, resAmp.real(), resAmp.imag());
             continue;
         }
 
@@ -925,12 +936,16 @@ __global__ void computeAmpsKernel(
     // 计算极化相关的振幅
     for (int k = 0; k < nPolar; ++k)
     {
-        int idx = sl_idx * nSLComb * nEvents + event_idx * nPolar + k;
+        int idx = sl_idx * nPolar * nEvents + event_idx * nPolar + k;
         int amp_idx = site * nSLComb * nEvents * nPolar + idx;
+        // printf("Event %d, SL %d, Polar %d, site %d, idx %d, Amp Index %d\n", event_idx, sl_idx, k, site, idx, amp_idx);
+        // printf("nEvents: %d, nSLComb: %d, nPolar: %d\n", nEvents, nSLComb, nPolar);
         thrust::complex<float> temp = resAmp * slamps[idx] * 100.0f;
         amplitudes[amp_idx] = make_cuComplex(temp.real(), temp.imag());
 
         // 打印
         // printf("Event %d, sl %d, Amp[%d] = (%f, %f i)\n", event_idx, sl_idx, k, temp.real(), temp.imag());
+        // printf("Event %d, sl %d, ResAmp[%d] = (%f, %f i)\n", event_idx, sl_idx, k, resAmp.real(), resAmp.imag());
     }
 }
+// }
