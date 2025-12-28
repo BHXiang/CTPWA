@@ -2,6 +2,7 @@
 #include "helicity.cu"
 #include "Resonance.cu"
 #include "AmpGen.cu"
+#include "Figure.cu"
 #include "ComputeNLL.cu"
 #include "ComputeGrad.cu"
 #include "ComputeWeight.cu"

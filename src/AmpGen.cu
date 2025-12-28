@@ -115,12 +115,12 @@ int AmpCasDecay::computeNPolarizations(const std::map<std::string, std::vector<L
 {
     int nPolar = 1;
     // 母粒子极化态数
-    if (!decayChain_.empty())
-    {
-        const std::string &motherName = decayChain_[0].mother;
-        int motherSpin = particleMap_.at(motherName).spin;
-        nPolar *= (2 * motherSpin + 1);
-    }
+    // if (!decayChain_.empty())
+    // {
+    //     const std::string &motherName = decayChain_[0].mother;
+    //     int motherSpin = particleMap_.at(motherName).spin;
+    //     nPolar *= (2 * motherSpin + 1);
+    // }
     // 末态粒子极化态数
     for (const auto &[name, _] : finalMomenta)
     {
@@ -240,6 +240,9 @@ void AmpCasDecay::computeSLAmps(const std::map<std::string, std::vector<LorentzV
     // 计算事件数和极化态数
     nEvents_ = finalMomenta.begin()->second.size();
     nPolarizations_ = computeNPolarizations(finalMomenta);
+
+    // std::cout << "Number of events: " << nEvents_ << std::endl;
+    // std::cout << "Number of polarizations: " << nPolarizations_ << std::endl;
 
     const auto slCombinations = getSLCombinations();
     nSLCombs_ = slCombinations.size();

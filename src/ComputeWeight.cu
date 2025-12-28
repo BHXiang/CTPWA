@@ -6,31 +6,6 @@
 // #include <complex>
 #include <cublas_v2.h>
 
-// // 核函数：计算复数模平方并按 npolar 分组求和
-// __global__ void computeModTotalWeight(
-//     const cuComplex *__restrict__ complex_result,
-//     double *__restrict__ final_result,
-//     int nEvents, int npolar)
-// {
-//     int event_idx = blockIdx.x * blockDim.x + threadIdx.x;
-
-//     if (event_idx >= nEvents)
-//         return;
-
-//     double sum = 0.0;
-
-//     // 每个线程处理一个 event，累加对应的 npolar 个元素的模平方
-//     for (int polar_idx = 0; polar_idx < npolar; polar_idx++)
-//     {
-//         int global_idx = event_idx * npolar + polar_idx;
-//         cuComplex val = complex_result[global_idx];
-//         double mod_square = val.x * val.x + val.y * val.y;
-//         sum += mod_square;
-//     }
-
-//     final_result[event_idx] = sum;
-// }
-
 // 核函数：计算复数模平方并按 npolar 分组求和，同时计算总和
 __global__ void computeModTotalWeight(
     const cuComplex *__restrict__ complex_result,
@@ -59,46 +34,6 @@ __global__ void computeModTotalWeight(
     // 使用原子操作累加总和
     atomicAdd(total_sum, sum);
 }
-
-// __global__ void computeModPartialWeight(
-//     const cuComplex *__restrict__ complex_matrix,
-//     const cuComplex *__restrict__ complex_vector,
-//     double *__restrict__ final_result,
-//     int *d_nSLvectors,
-//     int npartials,
-//     int nEvents, int npolar)
-// {
-//     int event_idx = blockIdx.x * blockDim.x + threadIdx.x;
-
-//     if (event_idx >= nEvents)
-//         return;
-
-//     // double sum = 0.0;
-
-//     int sltotal = 0;
-//     for (int p_idx = 0; p_idx < npartials; p_idx++)
-//     {
-//         int nSL = d_nSLvectors[p_idx];
-//         double partial_sum = 0.0;
-//         for (int sl_idx = 0; sl_idx < nSL; sl_idx++)
-//         {
-//             for (int polar_idx = 0; polar_idx < nSL; polar_idx++)
-//             {
-//                 int global_idx = sltotal * nEvents * npolar + event_idx * npolar + polar_idx;
-//                 cuComplex val = complex_matrix[global_idx];
-//                 cuComplex vec_val = complex_vector[polar_idx];
-//                 // 计算矩阵元素与向量元素的乘积
-//                 cuComplex prod = cuCmul(val, vec_val);
-//                 double mod_square = prod.x * prod.x + prod.y * prod.y;
-//                 partial_sum += mod_square;
-//             }
-//             sltotal++;
-//         }
-//         final_result[event_idx * npartials + p_idx] = partial_sum;
-//     }
-
-//     // final_result[event_idx] = sum;
-// }
 
 __global__ void computeModPartialWeight(
     const cuComplex *__restrict__ complex_matrix,
@@ -148,7 +83,8 @@ __global__ void computeModPartialWeight(
             }
 
             // 存储当前事件当前部分的结果
-            final_result[event_idx * npartials + p_idx] = partial_sum;
+            // final_result[event_idx * npartials + p_idx] = partial_sum;
+            final_result[p_idx * nEvents + event_idx] = partial_sum;
 
             // printf("Event %d, Partial %d, Partial Sum = %f\n", event_idx, p_idx, partial_sum);
 

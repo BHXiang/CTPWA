@@ -13,10 +13,12 @@
 #include <ComputeGrad.cuh>
 #include <ComputeWeight.cuh>
 #include <Config.cuh>
+#include <Figure.cuh>
 
 #include <TFile.h>
 #include <TTree.h>
 #include <TLorentzVector.h>
+#include <TObjString.h>
 
 //////////////////////////////////////////////
 struct ChainInfo
@@ -26,20 +28,543 @@ struct ChainInfo
 	std::vector<std::vector<Particle>> intermediate_combs;
 };
 
+////////////////////////////////////////
+std::map<std::string, std::vector<LorentzVector>> readMomentaFromDat(
+	const std::string &filename,
+	const std::vector<std::string> &particleNames,
+	const std::vector<std::string> &particlelists,
+	int nEvents = -1)
+{
+	std::map<std::string, std::vector<LorentzVector>> finalMomenta;
+	// for (const auto &name : particleNames)
+	for (const auto &name : particlelists)
+	{
+		finalMomenta[name] = std::vector<LorentzVector>();
+	}
+
+	std::unordered_set<std::string> particleNameSet(particleNames.begin(), particleNames.end());
+	std::string initialName;
+	bool foundParticle = false;
+
+	for (const auto &name : particlelists)
+	{
+		if (particleNameSet.find(name) == particleNameSet.end())
+		{
+			if (!foundParticle)
+			{
+				initialName = name;
+				foundParticle = true;
+			}
+			else
+			{
+				std::cerr << "Error: Found multiple particles in particlelists not present in particleNames" << std::endl;
+				return finalMomenta;
+			}
+		}
+	}
+
+	std::ifstream file(filename);
+	if (!file.is_open())
+	{
+		std::cerr << "Error: Cannot open file " << filename << std::endl;
+		return finalMomenta;
+	}
+
+	std::string line;
+	int eventCount = 0;
+	int lineCount = 0;
+	int particlesPerEvent = particleNames.size();
+
+	while (std::getline(file, line))
+	{
+		if (line.empty())
+			continue;
+
+		std::istringstream iss(line);
+		double E, px, py, pz;
+
+		if (iss >> E >> px >> py >> pz)
+		{
+			// 根据行号确定粒子类型
+			int particleIndex = lineCount % particlesPerEvent;
+			const std::string &particleName = particleNames[particleIndex];
+
+			finalMomenta[particleName].emplace_back(E, px, py, pz);
+			lineCount++;
+
+			// 每读完一组粒子表示完成一个事件
+			if (particleIndex == particlesPerEvent - 1)
+			{
+				LorentzVector initialMomentum(0, 0, 0, 0);
+				for (const auto &name : particleNames)
+				{
+					initialMomentum = initialMomentum + finalMomenta[name].back();
+				}
+
+				finalMomenta[initialName].emplace_back(initialMomentum);
+
+				eventCount++;
+
+				// 如果指定了事件数并且已达到，则停止读取
+				if (nEvents > 0 && eventCount >= nEvents)
+				{
+					break;
+				}
+			}
+		}
+		else
+		{
+			std::cerr << "Warning: Invalid line format: " << line << std::endl;
+		}
+	}
+
+	file.close();
+
+	// std::cout << "Successfully read " << eventCount << " events from " << filename << std::endl;
+	return finalMomenta;
+}
+
+// class NLLFunction : public torch::autograd::Function<NLLFunction>
+// {
+// public:
+// 	static torch::Tensor forward(torch::autograd::AutogradContext *ctx, torch::Tensor &vector, int n_gls_, int n_polar_, const cuComplex *data_fix_, int data_length, const cuComplex *phsp_fix_, int phsp_length, const cuComplex *bkg_fix_, int bkg_length, std::vector<std::vector<int>> con_trans_id, std::vector<std::vector<std::complex<double>>> con_trans_values)
+// 	{
+// 		TORCH_CHECK(vector.is_cuda(), "[NLLForward] vector must be on CUDA");
+// 		TORCH_CHECK(vector.dtype() == c10::kComplexFloat, "[NLLForward] vector must be complex64");
+
+// 		// 获取当前设备并设置
+// 		const int target_dev = vector.get_device();
+// 		torch::Device dev(torch::kCUDA, target_dev);
+
+// 		// 延长vector以处理约束
+// 		torch::Tensor extended_vector = extendVectorWithConstraints(vector, con_trans_id, con_trans_values, dev);
+// 		const int extended_n_gls = extended_vector.numel();
+
+// 		// 后续逻辑（MC因子计算等）
+// 		cuComplex *d_B = nullptr;
+// 		double *d_mc_amp = nullptr;
+// 		cudaMalloc(&d_B, phsp_length * sizeof(cuComplex));
+// 		cudaMalloc(&d_mc_amp, sizeof(double));
+
+// 		// computeSingleResult(phsp_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_B, d_mc_amp, phsp_length, extended_n_gls);
+// 		computePHSPfactor(phsp_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_B, d_mc_amp, phsp_length, extended_n_gls);
+
+// 		double h_phsp_factor;
+// 		cudaMemcpy(&h_phsp_factor, d_mc_amp, sizeof(double), cudaMemcpyDeviceToHost);
+// 		h_phsp_factor = h_phsp_factor / static_cast<double>(phsp_length / n_polar_);
+
+// 		// NLL计算
+// 		cuComplex *d_S = nullptr;
+// 		cuComplex *d_Q = nullptr;
+// 		double *d_data_nll = nullptr;
+// 		const int Q_numel = data_length / n_polar_;
+// 		cudaMalloc(&d_S, data_length * sizeof(cuComplex));
+// 		cudaMalloc(&d_Q, Q_numel * sizeof(cuComplex));
+// 		cudaMalloc(&d_data_nll, sizeof(double));
+
+// 		computeNll(data_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_S, d_Q, d_data_nll, data_length, extended_n_gls, n_polar_, h_phsp_factor);
+
+// 		double h_data_nll;
+// 		cudaMemcpy(&h_data_nll, d_data_nll, sizeof(double), cudaMemcpyDeviceToHost);
+
+// 		// bkg部分
+// 		cuComplex *d_bkg_S = nullptr;
+// 		cuComplex *d_bkg_Q = nullptr;
+// 		double *d_bkg_nll = nullptr;
+// 		const int bkg_Q_numel = bkg_length / n_polar_;
+// 		cudaMalloc(&d_bkg_S, bkg_length * sizeof(cuComplex));
+// 		cudaMalloc(&d_bkg_Q, bkg_Q_numel * sizeof(cuComplex));
+// 		cudaMalloc(&d_bkg_nll, sizeof(double));
+// 		double h_bkg_nll = 0.0;
+// 		if (bkg_fix_ != nullptr && bkg_length > 0)
+// 		{
+// 			computeNll(bkg_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_bkg_S, d_bkg_Q, d_bkg_nll, bkg_length, extended_n_gls, n_polar_, h_phsp_factor);
+
+// 			cudaMemcpy(&h_bkg_nll, d_bkg_nll, sizeof(double), cudaMemcpyDeviceToHost);
+// 		}
+
+// 		// 保存反向传播变量
+// 		ctx->saved_data["target_dev"] = target_dev;
+// 		ctx->saved_data["n_polar"] = n_polar_;
+// 		ctx->saved_data["h_phsp_factor"] = h_phsp_factor * static_cast<double>(phsp_length / n_polar_);
+// 		ctx->saved_data["n_gls"] = n_gls_;
+// 		ctx->saved_data["extended_n_gls"] = extended_n_gls;
+// 		ctx->saved_data["data_length"] = data_length;
+// 		ctx->saved_data["phsp_length"] = phsp_length;
+// 		ctx->saved_data["bkg_length"] = bkg_length;
+
+// 		// 保存共轭对信息
+// 		torch::Tensor conjugate_pairs_tensor = torch::empty({static_cast<int64_t>(conjugate_pairs_.size()), 2}, torch::kInt32);
+// 		auto conjugate_pairs_accessor = conjugate_pairs_tensor.accessor<int, 2>();
+// 		for (size_t i = 0; i < conjugate_pairs_.size(); ++i)
+// 		{
+// 			conjugate_pairs_accessor[i][0] = conjugate_pairs_[i].first;
+// 			conjugate_pairs_accessor[i][1] = conjugate_pairs_[i].second;
+// 		}
+// 		ctx->saved_data["conjugate_pairs"] = conjugate_pairs_tensor;
+
+// 		// 保存显存指针
+// 		ctx->saved_data["data_fix_ptr"] = reinterpret_cast<int64_t>(data_fix_);
+// 		ctx->saved_data["phsp_fix_ptr"] = reinterpret_cast<int64_t>(phsp_fix_);
+// 		ctx->saved_data["bkg_fix_ptr"] = reinterpret_cast<int64_t>(bkg_fix_);
+// 		ctx->saved_data["d_B_ptr"] = reinterpret_cast<int64_t>(d_B);
+// 		ctx->saved_data["d_S_ptr"] = reinterpret_cast<int64_t>(d_S);
+// 		ctx->saved_data["d_Q_ptr"] = reinterpret_cast<int64_t>(d_Q);
+// 		ctx->saved_data["d_bkg_S_ptr"] = reinterpret_cast<int64_t>(d_bkg_S);
+// 		ctx->saved_data["d_bkg_Q_ptr"] = reinterpret_cast<int64_t>(d_bkg_Q);
+// 		ctx->saved_data["d_bkg_nll_ptr"] = reinterpret_cast<int64_t>(d_bkg_nll);
+
+// 		ctx->save_for_backward({vector, extended_vector});
+
+// 		// 释放临时内存
+// 		cudaFree(d_mc_amp);
+
+// 		return torch::tensor({h_data_nll - h_bkg_nll}, torch::kDouble).to(dev);
+// 	}
+
+// 	static torch::autograd::tensor_list backward(torch::autograd::AutogradContext *ctx, const torch::autograd::tensor_list &grad_outputs)
+// 	{
+// 		const int target_dev = ctx->saved_data["target_dev"].toInt();
+
+// 		// std::cout << "debug: " << __LINE__ << std::endl;
+
+// 		// 从 saved_data 获取参数
+// 		const int n_polar = ctx->saved_data["n_polar"].toInt();
+// 		const double h_phsp_factor = ctx->saved_data["h_phsp_factor"].toDouble();
+// 		const int n_gls = ctx->saved_data["n_gls"].toInt();
+// 		const int extended_n_gls = ctx->saved_data["extended_n_gls"].toInt();
+// 		const int data_length = ctx->saved_data["data_length"].toInt();
+// 		const int phsp_length = ctx->saved_data["phsp_length"].toInt();
+// 		const int bkg_length = ctx->saved_data["bkg_length"].toInt();
+
+// 		// // 获取共轭对信息
+// 		auto conjugate_pairs_tensor = ctx->saved_data["conjugate_pairs"].toTensor();
+// 		std::vector<std::pair<int, int>> conjugate_pairs;
+// 		auto conjugate_pairs_accessor = conjugate_pairs_tensor.accessor<int, 2>();
+// 		for (int64_t i = 0; i < conjugate_pairs_tensor.size(0); ++i)
+// 		{
+// 			conjugate_pairs.push_back({conjugate_pairs_accessor[i][0], conjugate_pairs_accessor[i][1]});
+// 		}
+
+// 		// 从 saved_data 获取显存指针
+// 		cuComplex *d_B = reinterpret_cast<cuComplex *>(ctx->saved_data["d_B_ptr"].toInt());
+// 		cuComplex *data_fix = reinterpret_cast<cuComplex *>(ctx->saved_data["data_fix_ptr"].toInt());
+// 		cuComplex *phsp_fix = reinterpret_cast<cuComplex *>(ctx->saved_data["phsp_fix_ptr"].toInt());
+// 		cuComplex *d_S = reinterpret_cast<cuComplex *>(ctx->saved_data["d_S_ptr"].toInt());
+// 		cuComplex *d_Q = reinterpret_cast<cuComplex *>(ctx->saved_data["d_Q_ptr"].toInt());
+
+// 		// // 获取背景数据的指针（如果存在）
+// 		// if (bkg_length > 0)
+// 		// {
+// 		cuComplex *bkg_fix = reinterpret_cast<cuComplex *>(ctx->saved_data["bkg_fix_ptr"].toInt());
+// 		cuComplex *d_bkg_S = reinterpret_cast<cuComplex *>(ctx->saved_data["d_bkg_S_ptr"].toInt());
+// 		cuComplex *d_bkg_Q = reinterpret_cast<cuComplex *>(ctx->saved_data["d_bkg_Q_ptr"].toInt());
+// 		// }
+
+// 		// 获取保存的变量
+// 		const auto saved = ctx->get_saved_variables();
+// 		const auto &original_vector = saved[0];
+// 		const auto &extended_vector = saved[1];
+
+// 		// 计算扩展向量的梯度
+// 		cuComplex *d_extended_grad = nullptr;
+// 		cudaMalloc(&d_extended_grad, extended_n_gls * sizeof(cuComplex));
+
+// 		cublasHandle_t cublas_handle;
+// 		cublasCreate(&cublas_handle);
+// 		compute_gradient(data_fix, phsp_fix, d_S, d_Q, d_B, h_phsp_factor, extended_n_gls, data_length / n_polar, n_polar, phsp_length, d_extended_grad, cublas_handle);
+
+// 		// 如果有背景数据，减去背景NLL的梯度
+// 		if (bkg_fix != nullptr && bkg_length > 0)
+// 		{
+// 			cuComplex *d_bkg_extended_grad = nullptr;
+// 			cudaMalloc(&d_bkg_extended_grad, extended_n_gls * sizeof(cuComplex));
+
+// 			// 初始化背景梯度为0
+// 			cudaMemset(d_bkg_extended_grad, 0, extended_n_gls * sizeof(cuComplex));
+
+// 			// 计算背景NLL的梯度
+// 			compute_gradient(bkg_fix, phsp_fix, d_bkg_S, d_bkg_Q, d_B, h_phsp_factor,
+// 							 extended_n_gls, bkg_length / n_polar, n_polar,
+// 							 phsp_length, d_bkg_extended_grad, cublas_handle);
+
+// 			// 从数据梯度中减去背景梯度：∇L = ∇(data_nll) - ∇(bkg_nll)
+// 			// 使用cublas的向量减法操作
+// 			const cuComplex minus_one = make_cuComplex(-1.0f, 0.0f);
+// 			cublasCaxpy(cublas_handle, extended_n_gls,
+// 						&minus_one, d_bkg_extended_grad, 1,
+// 						d_extended_grad, 1);
+
+// 			cudaFree(d_bkg_extended_grad);
+// 			cudaFree(d_bkg_S);
+// 			cudaFree(d_bkg_Q);
+// 		}
+
+// 		// 		// 输出d_extended_grad以供调试
+// 		// torch::Tensor debug_extended_grad = torch::empty({extended_n_gls}, torch::kComplexFloat).to(original_vector.device());
+// 		// cudaMemcpy(debug_extended_grad.data_ptr(), d_extended_grad,
+// 		// 		   extended_n_gls * sizeof(cuComplex),
+// 		// 		   cudaMemcpyDeviceToDevice);
+// 		// std::cout << "Debug extended_grad: " << debug_extended_grad << std::endl;
+
+// 		// 将扩展梯度的共轭部分合并回原始梯度
+// 		torch::Tensor extended_grad = torch::empty({extended_n_gls}, torch::kComplexFloat).to(original_vector.device());
+// 		cudaMemcpy(extended_grad.data_ptr(), d_extended_grad,
+// 				   extended_n_gls * sizeof(cuComplex),
+// 				   cudaMemcpyDeviceToDevice);
+
+// 		torch::Tensor grad_vector = mergeGradientsWithConjugates(extended_grad, conjugate_pairs, original_vector.numel());
+
+// 		// 清理内存
+// 		cudaFree(d_extended_grad);
+// 		cudaFree(d_B);
+// 		cudaFree(d_S);
+// 		cudaFree(d_Q);
+// 		cublasDestroy(cublas_handle);
+
+// 		return {grad_vector, torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor()};
+// 	}
+
+// private:
+// 	static torch::Tensor extendVectorWithConstraints(const torch::Tensor &vector,
+// 													 const std::vector<std::vector<int>> &con_trans_id,
+// 													 const std::vector<std::vector<std::complex<double>>> &con_trans_values,
+// 													 const torch::Device &device)
+// 	{
+// 		TORCH_CHECK(vector.is_complex(), "Input vector must be complex type");
+// 		TORCH_CHECK(vector.dim() == 1, "Input vector must be 1-dimensional");
+
+// 		const int original_size = vector.numel();
+// 		int extended_size = original_size;
+
+// 		// 找到最大ID以确定扩展大小
+// 		for (const auto &vecid : con_trans_id)
+// 		{
+// 			if (!vecid.empty())
+// 			{
+// 				auto max_it = std::max_element(vecid.begin(), vecid.end());
+// 				extended_size = std::max(extended_size, *max_it + 1);
+// 			}
+// 		}
+
+// 		if (extended_size == original_size)
+// 		{
+// 			return vector.clone();
+// 		}
+
+// 		// 创建扩展后的向量
+// 		torch::TensorOptions options = torch::TensorOptions()
+// 										   .dtype(torch::kComplexFloat)
+// 										   .device(device);
+
+// 		torch::Tensor extended_vector = torch::zeros({extended_size}, options);
+
+// 		// 使用访问器进行更高效的操作
+// 		auto extended_accessor = extended_vector.accessor<std::complex<float>, 1>();
+// 		auto vector_accessor = vector.accessor<std::complex<float>, 1>();
+
+// 		// 复制原始向量到扩展向量
+// 		for (int i = 0; i < original_size; ++i)
+// 		{
+// 			extended_accessor[i] = vector_accessor[i];
+// 		}
+
+// 		// 设置约束
+// 		for (size_t i = 0; i < con_trans_id.size(); ++i)
+// 		{
+// 			const auto &vecid = con_trans_id[i];
+// 			const auto &values = con_trans_values[i];
+
+// 			if (vecid.empty() || values.empty() || vecid.size() != values.size())
+// 			{
+// 				continue;
+// 			}
+
+// 			// 找到原始ID（最小值）
+// 			auto min_it = std::min_element(vecid.begin(), vecid.end());
+// 			int origin_idx = std::distance(vecid.begin(), min_it);
+// 			int origin_id = vecid[origin_idx];
+
+// 			// 确保原始ID有效
+// 			if (origin_id < 0 || origin_id >= original_size)
+// 			{
+// 				continue;
+// 			}
+
+// 			// 获取原始值
+// 			std::complex<float> origin_value = extended_accessor[origin_id];
+// 			float origin_real = std::real(origin_value);
+// 			float origin_imag = std::imag(origin_value);
+
+// 			// 获取原始ID对应的系数
+// 			std::complex<double> origin_coeff = values[origin_idx];
+// 			double origin_coeff_real = std::real(origin_coeff);
+// 			double origin_coeff_imag = std::imag(origin_coeff);
+
+// 			// 检查分母不为零
+// 			if (std::abs(origin_coeff_real) < 1e-10 || std::abs(origin_coeff_imag) < 1e-10)
+// 			{
+// 				std::cerr << "Warning: origin coefficient too small, skipping constraint group " << i << std::endl;
+// 				continue;
+// 			}
+
+// 			// 为每个扩展ID设置值
+// 			for (size_t j = 0; j < vecid.size(); ++j)
+// 			{
+// 				if (j == origin_idx)
+// 					continue; // 跳过原始ID
+
+// 				int extended_id = vecid[j];
+
+// 				// 确保扩展ID有效且不超过values数组的大小
+// 				if (extended_id >= 0 && extended_id < extended_size && j < values.size())
+// 				{
+// 					std::complex<double> ext_coeff = values[j];
+// 					double ext_coeff_real = std::real(ext_coeff);
+// 					double ext_coeff_imag = std::imag(ext_coeff);
+
+// 					// 计算扩展值：使用相对系数
+// 					float extended_real = static_cast<float>(ext_coeff_real / origin_coeff_real) * origin_real;
+// 					float extended_imag = static_cast<float>(ext_coeff_imag / origin_coeff_imag) * origin_imag;
+
+// 					// 直接赋值
+// 					extended_accessor[extended_id] = std::complex<float>(extended_real, extended_imag);
+// 				}
+// 			}
+// 		}
+
+// 		return extended_vector;
+// 	}
+
+// 	static torch::Tensor mergeGradientsWithConstraints(const torch::Tensor &extended_grad,
+// 													   const std::vector<std::pair<int, int>> &conjugate_pairs,
+// 													   int original_size)
+// 	{
+// 		torch::Tensor grad_vector = torch::zeros({original_size}, torch::kComplexFloat).to(extended_grad.device());
+
+// 		// 复制直接梯度
+// 		grad_vector = extended_grad.slice(0, 0, original_size);
+
+// 		// 合并共轭对的梯度
+// 		for (const auto &pair : conjugate_pairs)
+// 		{
+// 			int source_idx = pair.first;
+// 			int conjugate_idx = pair.second;
+
+// 			if (source_idx < original_size && conjugate_idx < extended_grad.numel())
+// 			{
+// 				// 对于共轭关系：y = conj(x)，梯度关系：dy/dx = conj(dL/dy)
+// 				torch::Tensor conjugate_grad = extended_grad[conjugate_idx];
+// 				// grad_vector[source_idx] = grad_vector[source_idx] + torch::conj(conjugate_grad);
+// 				grad_vector[source_idx] = grad_vector[source_idx] - conjugate_grad;
+// 			}
+// 		}
+
+// 		return grad_vector;
+// 	}
+// 	// static torch::Tensor extendVectorWithConjugates(const torch::Tensor &vector,
+// 	// 												const std::vector<std::vector<int>> &con_trans_id,
+// 	// 												const std::vector<std::vector<std::complex<double>>> &con_trans_values,
+// 	// 												const torch::Device &device)
+// 	// {
+// 	// 	const int original_size = vector.numel();
+// 	// 	int extended_size = original_size + con_trans_id.size();
+
+// 	// 	// 计算需要扩展的大小
+// 	// 	// for (const auto &pair : con_trans_id)
+// 	// 	// {
+// 	// 	// 	extended_size = std::max(extended_size, std::max(pair.first, pair.second) + 1);
+// 	// 	// }
+
+// 	// 	if (extended_size == original_size)
+// 	// 	{
+// 	// 		return vector.clone();
+// 	// 	}
+
+// 	// 	// 创建扩展后的向量
+// 	// 	torch::Tensor extended_vector = torch::zeros({extended_size}, torch::kComplexFloat).to(device);
+
+// 	// 	// 复制原始向量到扩展向量
+// 	// 	extended_vector.slice(0, 0, original_size) = vector;
+
+// 	// 	// 设置约束
+// 	// 	for (const auto &vecid : con_trans_id)
+// 	// 	{
+// 	// 		int source_idx = pair.first;
+// 	// 		int conjugate_idx = pair.second;
+
+// 	// 		if (source_idx < original_size && conjugate_idx < extended_size)
+// 	// 		{
+// 	// 			// 获取源元素的共轭
+// 	// 			torch::Tensor source_val = extended_vector[source_idx];
+// 	// 			// extended_vector[conjugate_idx] = torch::conj(source_val);
+// 	// 			extended_vector[conjugate_idx] = -1.0 * source_val;
+// 	// 		}
+// 	// 	}
+
+// 	// 	return extended_vector;
+// 	// }
+
+// 	// static torch::Tensor mergeGradientsWithConjugates(const torch::Tensor &extended_grad,
+// 	// 												  const std::vector<std::pair<int, int>> &conjugate_pairs,
+// 	// 												  int original_size)
+// 	// {
+// 	// 	torch::Tensor grad_vector = torch::zeros({original_size}, torch::kComplexFloat).to(extended_grad.device());
+
+// 	// 	// 复制直接梯度
+// 	// 	grad_vector = extended_grad.slice(0, 0, original_size);
+
+// 	// 	// 合并共轭对的梯度
+// 	// 	for (const auto &pair : conjugate_pairs)
+// 	// 	{
+// 	// 		int source_idx = pair.first;
+// 	// 		int conjugate_idx = pair.second;
+
+// 	// 		if (source_idx < original_size && conjugate_idx < extended_grad.numel())
+// 	// 		{
+// 	// 			// 对于共轭关系：y = conj(x)，梯度关系：dy/dx = conj(dL/dy)
+// 	// 			torch::Tensor conjugate_grad = extended_grad[conjugate_idx];
+// 	// 			// grad_vector[source_idx] = grad_vector[source_idx] + torch::conj(conjugate_grad);
+// 	// 			grad_vector[source_idx] = grad_vector[source_idx] - conjugate_grad;
+// 	// 		}
+// 	// 	}
+
+// 	// 	return grad_vector;
+// 	// }
+// };
+
 class NLLFunction : public torch::autograd::Function<NLLFunction>
 {
+private:
+	// 私有成员变量，存储约束信息
+	static std::vector<std::vector<int>> con_trans_id_;
+	static std::vector<std::vector<std::complex<double>>> con_trans_values_;
+	static bool constraints_initialized_;
+
 public:
-	static torch::Tensor forward(torch::autograd::AutogradContext *ctx, torch::Tensor &vector, int n_gls_, int n_polar_, const cuComplex *data_fix_, int data_length, const cuComplex *phsp_fix_, int phsp_length, const cuComplex *bkg_fix_, int bkg_length, std::vector<std::pair<int, int>> conjugate_pairs_)
+	static torch::Tensor forward(torch::autograd::AutogradContext *ctx,
+								 torch::Tensor &vector,
+								 int n_gls_,
+								 int n_polar_,
+								 const cuComplex *data_fix_,
+								 int data_length,
+								 const cuComplex *phsp_fix_,
+								 int phsp_length,
+								 const cuComplex *bkg_fix_,
+								 int bkg_length)
 	{
 		TORCH_CHECK(vector.is_cuda(), "[NLLForward] vector must be on CUDA");
 		TORCH_CHECK(vector.dtype() == c10::kComplexFloat, "[NLLForward] vector must be complex64");
+
+		// 检查约束是否已初始化
+		TORCH_CHECK(constraints_initialized_, "[NLLForward] Constraints not initialized. Call setConstraints() first.");
 
 		// 获取当前设备并设置
 		const int target_dev = vector.get_device();
 		torch::Device dev(torch::kCUDA, target_dev);
 
-		// 延长vector以处理共轭对
-		torch::Tensor extended_vector = extendVectorWithConjugates(vector, conjugate_pairs_, dev);
+		// 延长vector以处理约束
+		torch::Tensor extended_vector = extendVectorWithConstraints(vector, dev);
 		const int extended_n_gls = extended_vector.numel();
 
 		// 后续逻辑（MC因子计算等）
@@ -48,7 +573,7 @@ public:
 		cudaMalloc(&d_B, phsp_length * sizeof(cuComplex));
 		cudaMalloc(&d_mc_amp, sizeof(double));
 
-		// computeSingleResult(phsp_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_B, d_mc_amp, phsp_length, extended_n_gls);
+		// 注意：这里使用了 c10::complex 类型
 		computePHSPfactor(phsp_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_B, d_mc_amp, phsp_length, extended_n_gls);
 
 		double h_phsp_factor;
@@ -95,16 +620,6 @@ public:
 		ctx->saved_data["phsp_length"] = phsp_length;
 		ctx->saved_data["bkg_length"] = bkg_length;
 
-		// 保存共轭对信息
-		torch::Tensor conjugate_pairs_tensor = torch::empty({static_cast<int64_t>(conjugate_pairs_.size()), 2}, torch::kInt32);
-		auto conjugate_pairs_accessor = conjugate_pairs_tensor.accessor<int, 2>();
-		for (size_t i = 0; i < conjugate_pairs_.size(); ++i)
-		{
-			conjugate_pairs_accessor[i][0] = conjugate_pairs_[i].first;
-			conjugate_pairs_accessor[i][1] = conjugate_pairs_[i].second;
-		}
-		ctx->saved_data["conjugate_pairs"] = conjugate_pairs_tensor;
-
 		// 保存显存指针
 		ctx->saved_data["data_fix_ptr"] = reinterpret_cast<int64_t>(data_fix_);
 		ctx->saved_data["phsp_fix_ptr"] = reinterpret_cast<int64_t>(phsp_fix_);
@@ -124,11 +639,10 @@ public:
 		return torch::tensor({h_data_nll - h_bkg_nll}, torch::kDouble).to(dev);
 	}
 
-	static torch::autograd::tensor_list backward(torch::autograd::AutogradContext *ctx, const torch::autograd::tensor_list &grad_outputs)
+	static torch::autograd::tensor_list backward(torch::autograd::AutogradContext *ctx,
+												 const torch::autograd::tensor_list &grad_outputs)
 	{
 		const int target_dev = ctx->saved_data["target_dev"].toInt();
-
-		// std::cout << "debug: " << __LINE__ << std::endl;
 
 		// 从 saved_data 获取参数
 		const int n_polar = ctx->saved_data["n_polar"].toInt();
@@ -139,15 +653,6 @@ public:
 		const int phsp_length = ctx->saved_data["phsp_length"].toInt();
 		const int bkg_length = ctx->saved_data["bkg_length"].toInt();
 
-		// // 获取共轭对信息
-		auto conjugate_pairs_tensor = ctx->saved_data["conjugate_pairs"].toTensor();
-		std::vector<std::pair<int, int>> conjugate_pairs;
-		auto conjugate_pairs_accessor = conjugate_pairs_tensor.accessor<int, 2>();
-		for (int64_t i = 0; i < conjugate_pairs_tensor.size(0); ++i)
-		{
-			conjugate_pairs.push_back({conjugate_pairs_accessor[i][0], conjugate_pairs_accessor[i][1]});
-		}
-
 		// 从 saved_data 获取显存指针
 		cuComplex *d_B = reinterpret_cast<cuComplex *>(ctx->saved_data["d_B_ptr"].toInt());
 		cuComplex *data_fix = reinterpret_cast<cuComplex *>(ctx->saved_data["data_fix_ptr"].toInt());
@@ -155,13 +660,9 @@ public:
 		cuComplex *d_S = reinterpret_cast<cuComplex *>(ctx->saved_data["d_S_ptr"].toInt());
 		cuComplex *d_Q = reinterpret_cast<cuComplex *>(ctx->saved_data["d_Q_ptr"].toInt());
 
-		// // 获取背景数据的指针（如果存在）
-		// if (bkg_length > 0)
-		// {
 		cuComplex *bkg_fix = reinterpret_cast<cuComplex *>(ctx->saved_data["bkg_fix_ptr"].toInt());
 		cuComplex *d_bkg_S = reinterpret_cast<cuComplex *>(ctx->saved_data["d_bkg_S_ptr"].toInt());
 		cuComplex *d_bkg_Q = reinterpret_cast<cuComplex *>(ctx->saved_data["d_bkg_Q_ptr"].toInt());
-		// }
 
 		// 获取保存的变量
 		const auto saved = ctx->get_saved_variables();
@@ -182,16 +683,10 @@ public:
 			cuComplex *d_bkg_extended_grad = nullptr;
 			cudaMalloc(&d_bkg_extended_grad, extended_n_gls * sizeof(cuComplex));
 
-			// 初始化背景梯度为0
 			cudaMemset(d_bkg_extended_grad, 0, extended_n_gls * sizeof(cuComplex));
 
-			// 计算背景NLL的梯度
-			compute_gradient(bkg_fix, phsp_fix, d_bkg_S, d_bkg_Q, d_B, h_phsp_factor,
-							 extended_n_gls, bkg_length / n_polar, n_polar,
-							 phsp_length, d_bkg_extended_grad, cublas_handle);
+			compute_gradient(bkg_fix, phsp_fix, d_bkg_S, d_bkg_Q, d_B, h_phsp_factor, extended_n_gls, bkg_length / n_polar, n_polar, phsp_length, d_bkg_extended_grad, cublas_handle);
 
-			// 从数据梯度中减去背景梯度：∇L = ∇(data_nll) - ∇(bkg_nll)
-			// 使用cublas的向量减法操作
 			const cuComplex minus_one = make_cuComplex(-1.0f, 0.0f);
 			cublasCaxpy(cublas_handle, extended_n_gls,
 						&minus_one, d_bkg_extended_grad, 1,
@@ -202,20 +697,12 @@ public:
 			cudaFree(d_bkg_Q);
 		}
 
-		// 		// 输出d_extended_grad以供调试
-		// torch::Tensor debug_extended_grad = torch::empty({extended_n_gls}, torch::kComplexFloat).to(original_vector.device());
-		// cudaMemcpy(debug_extended_grad.data_ptr(), d_extended_grad,
-		// 		   extended_n_gls * sizeof(cuComplex),
-		// 		   cudaMemcpyDeviceToDevice);
-		// std::cout << "Debug extended_grad: " << debug_extended_grad << std::endl;
-
-		// 将扩展梯度的共轭部分合并回原始梯度
+		// 将扩展梯度复制到torch张量
 		torch::Tensor extended_grad = torch::empty({extended_n_gls}, torch::kComplexFloat).to(original_vector.device());
-		cudaMemcpy(extended_grad.data_ptr(), d_extended_grad,
-				   extended_n_gls * sizeof(cuComplex),
-				   cudaMemcpyDeviceToDevice);
+		cudaMemcpy(extended_grad.data_ptr(), d_extended_grad, extended_n_gls * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
 
-		torch::Tensor grad_vector = mergeGradientsWithConjugates(extended_grad, conjugate_pairs, original_vector.numel());
+		// 合并梯度（考虑约束关系）
+		torch::Tensor grad_vector = mergeGradientsWithConstraints(extended_grad, original_vector.numel());
 
 		// 清理内存
 		cudaFree(d_extended_grad);
@@ -224,21 +711,45 @@ public:
 		cudaFree(d_Q);
 		cublasDestroy(cublas_handle);
 
-		return {grad_vector, torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor()};
+		return {grad_vector, torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(),
+				torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor()};
 	}
 
-private:
-	static torch::Tensor extendVectorWithConjugates(const torch::Tensor &vector,
-													const std::vector<std::pair<int, int>> &conjugate_pairs,
-													const torch::Device &device)
+	// 设置约束的静态方法
+	static void setConstraints(const std::vector<std::vector<int>> &con_trans_id,
+							   const std::vector<std::vector<std::complex<double>>> &con_trans_values)
 	{
+		con_trans_id_ = con_trans_id;
+		con_trans_values_ = con_trans_values;
+		constraints_initialized_ = true;
+	}
+
+	// 清除约束的静态方法
+	// static void clearConstraints()
+	// {
+	// 	con_trans_id_.clear();
+	// 	con_trans_values_.clear();
+	// 	constraints_initialized_ = false;
+	// }
+
+private:
+	static torch::Tensor extendVectorWithConstraints(const torch::Tensor &vector,
+													 const torch::Device &device)
+	{
+		TORCH_CHECK(vector.is_complex(), "Input vector must be complex type");
+		TORCH_CHECK(vector.dim() == 1, "Input vector must be 1-dimensional");
+
 		const int original_size = vector.numel();
 		int extended_size = original_size;
 
-		// 计算需要扩展的大小
-		for (const auto &pair : conjugate_pairs)
+		// 找到最大ID以确定扩展大小
+		for (const auto &vecid : con_trans_id_)
 		{
-			extended_size = std::max(extended_size, std::max(pair.first, pair.second) + 1);
+			if (!vecid.empty())
+			{
+				auto max_it = std::max_element(vecid.begin(), vecid.end());
+				extended_size = std::max(extended_size, *max_it + 1);
+			}
 		}
 
 		if (extended_size == original_size)
@@ -247,124 +758,198 @@ private:
 		}
 
 		// 创建扩展后的向量
-		torch::Tensor extended_vector = torch::zeros({extended_size}, torch::kComplexFloat).to(device);
+		torch::TensorOptions options = torch::TensorOptions()
+										   .dtype(torch::kComplexFloat)
+										   .device(device);
 
-		// 复制原始向量到扩展向量
-		extended_vector.slice(0, 0, original_size) = vector;
+		torch::Tensor extended_vector = torch::zeros({extended_size}, options);
 
-		// 设置共轭对
-		for (const auto &pair : conjugate_pairs)
+		// 方法1：使用 PyTorch 的索引操作（在 GPU 上）
+		// 创建索引，选择原始部分
+		torch::Tensor indices = torch::arange(0, original_size, torch::kLong).to(device);
+		extended_vector.index_copy_(0, indices, vector);
+
+		// 在 GPU 上处理约束
+		for (size_t i = 0; i < con_trans_id_.size(); ++i)
 		{
-			int source_idx = pair.first;
-			int conjugate_idx = pair.second;
+			const auto &vecid = con_trans_id_[i];
+			const auto &values = con_trans_values_[i];
 
-			if (source_idx < original_size && conjugate_idx < extended_size)
+			if (vecid.empty() || values.empty() || vecid.size() != values.size())
 			{
-				// 获取源元素的共轭
-				torch::Tensor source_val = extended_vector[source_idx];
-				// extended_vector[conjugate_idx] = torch::conj(source_val);
-				extended_vector[conjugate_idx] = -1.0 * source_val;
+				continue;
+			}
+
+			// 找到原始ID（最小值）
+			auto min_it = std::min_element(vecid.begin(), vecid.end());
+			int origin_idx = std::distance(vecid.begin(), min_it);
+			int origin_id = vecid[origin_idx];
+
+			// 确保原始ID有效
+			if (origin_id < 0 || origin_id >= original_size)
+			{
+				continue;
+			}
+
+			// 获取原始ID对应的系数
+			std::complex<double> origin_coeff = values[origin_idx];
+			double origin_coeff_real = std::real(origin_coeff);
+			double origin_coeff_imag = std::imag(origin_coeff);
+
+			// 检查分母不为零
+			if (std::abs(origin_coeff_real) < 1e-10 || std::abs(origin_coeff_imag) < 1e-10)
+			{
+				std::cerr << "Warning: origin coefficient too small, skipping constraint group " << i << std::endl;
+				continue;
+			}
+
+			// 为每个扩展ID设置值
+			for (size_t j = 0; j < vecid.size(); ++j)
+			{
+				if (j == origin_idx)
+					continue; // 跳过原始ID
+
+				int extended_id = vecid[j];
+
+				// 确保扩展ID有效且不超过values数组的大小
+				if (extended_id >= 0 && extended_id < extended_size && j < values.size())
+				{
+					std::complex<double> ext_coeff = values[j];
+					double ext_coeff_real = std::real(ext_coeff);
+					double ext_coeff_imag = std::imag(ext_coeff);
+
+					// 计算系数比例（直接在 GPU 上）
+					float real_ratio = static_cast<float>(ext_coeff_real / origin_coeff_real);
+					float imag_ratio = static_cast<float>(ext_coeff_imag / origin_coeff_imag);
+
+					// 在 GPU 上执行线性变换
+					// extended_vector[extended_id] = real_ratio * real_part + imag_ratio * imag_part
+
+					// 获取原始向量的值
+					torch::Tensor origin_value = vector[origin_id];
+
+					// 计算实部和虚部
+					torch::Tensor real_part = (origin_value + torch::conj(origin_value)) / 2.0f;
+					torch::Tensor imag_part = (origin_value - torch::conj(origin_value)) / (2.0f * c10::complex<float>(0, 1));
+
+					// 计算扩展值
+					torch::Tensor extended_real = real_ratio * real_part;
+					torch::Tensor extended_imag = imag_ratio * imag_part;
+
+					// 合并实部和虚部
+					torch::Tensor extended_value = extended_real + c10::complex<float>(0, 1) * extended_imag;
+
+					// 赋值
+					extended_vector[extended_id] = extended_value;
+				}
 			}
 		}
 
 		return extended_vector;
 	}
 
-	static torch::Tensor mergeGradientsWithConjugates(const torch::Tensor &extended_grad,
-													  const std::vector<std::pair<int, int>> &conjugate_pairs,
-													  int original_size)
+	static torch::Tensor mergeGradientsWithConstraints(
+		const torch::Tensor &extended_grad,
+		int original_size)
 	{
-		torch::Tensor grad_vector = torch::zeros({original_size}, torch::kComplexFloat).to(extended_grad.device());
+		torch::Device device = extended_grad.device();
+		torch::Tensor grad_vector = torch::zeros({original_size}, torch::kComplexFloat).to(device);
 
-		// 复制直接梯度
-		grad_vector = extended_grad.slice(0, 0, original_size);
-
-		// 合并共轭对的梯度
-		for (const auto &pair : conjugate_pairs)
+		// 复制原始元素的梯度
+		if (original_size > 0)
 		{
-			int source_idx = pair.first;
-			int conjugate_idx = pair.second;
+			grad_vector.copy_(extended_grad.slice(0, 0, original_size));
+		}
 
-			if (source_idx < original_size && conjugate_idx < extended_grad.numel())
+		// 如果没有约束，直接返回
+		if (con_trans_id_.empty())
+		{
+			return grad_vector;
+		}
+
+		// 对于每个约束组
+		for (size_t group_idx = 0; group_idx < con_trans_id_.size(); ++group_idx)
+		{
+			const auto &vecid = con_trans_id_[group_idx];
+			const auto &values = con_trans_values_[group_idx];
+
+			if (vecid.empty() || values.empty() || vecid.size() != values.size())
 			{
-				// 对于共轭关系：y = conj(x)，梯度关系：dy/dx = conj(dL/dy)
-				torch::Tensor conjugate_grad = extended_grad[conjugate_idx];
-				// grad_vector[source_idx] = grad_vector[source_idx] + torch::conj(conjugate_grad);
-				grad_vector[source_idx] = grad_vector[source_idx] - conjugate_grad;
+				continue;
 			}
+
+			// 找到原始ID（最小值）
+			auto min_it = std::min_element(vecid.begin(), vecid.end());
+			int origin_idx = std::distance(vecid.begin(), min_it);
+			int origin_id = vecid[origin_idx];
+
+			if (origin_id < 0 || origin_id >= original_size)
+			{
+				continue;
+			}
+
+			std::complex<double> origin_coeff = values[origin_idx];
+			double origin_coeff_real = std::real(origin_coeff);
+			double origin_coeff_imag = std::imag(origin_coeff);
+
+			if (std::abs(origin_coeff_real) < 1e-10 || std::abs(origin_coeff_imag) < 1e-10)
+			{
+				continue;
+			}
+
+			// 收集该原始元素对应的所有扩展元素
+			std::vector<int> ext_indices;
+			std::vector<float> real_ratios, imag_ratios;
+
+			for (size_t j = 0; j < vecid.size(); ++j)
+			{
+				if (j == origin_idx)
+					continue;
+
+				int extended_id = vecid[j];
+				if (extended_id < 0 || extended_id >= extended_grad.numel() || j >= values.size())
+				{
+					continue;
+				}
+
+				std::complex<double> ext_coeff = values[j];
+				real_ratios.push_back(static_cast<float>(std::real(ext_coeff) / origin_coeff_real));
+				imag_ratios.push_back(static_cast<float>(std::imag(ext_coeff) / origin_coeff_imag));
+				ext_indices.push_back(extended_id);
+			}
+
+			if (ext_indices.empty())
+				continue;
+
+			// 转换为张量
+			torch::Tensor ext_idx_tensor = torch::tensor(ext_indices, torch::kLong).to(device);
+			torch::Tensor real_ratio_tensor = torch::tensor(real_ratios, torch::kFloat).to(device);
+			torch::Tensor imag_ratio_tensor = torch::tensor(imag_ratios, torch::kFloat).to(device);
+
+			// 获取扩展元素的梯度
+			torch::Tensor ext_grads = extended_grad.index_select(0, ext_idx_tensor);
+
+			// 分离实部和虚部
+			torch::Tensor ext_grad_real = (ext_grads + torch::conj(ext_grads)) / 2.0f;
+			torch::Tensor ext_grad_imag = (ext_grads - torch::conj(ext_grads)) / (2.0f * c10::complex<float>(0, 1));
+
+			// 计算总贡献
+			torch::Tensor total_contrib = (real_ratio_tensor * ext_grad_real +
+										   c10::complex<float>(0, 1) * imag_ratio_tensor * ext_grad_imag)
+											  .sum();
+
+			// 累加到原始元素
+			grad_vector[origin_id] = grad_vector[origin_id] + total_contrib;
 		}
 
 		return grad_vector;
 	}
 };
 
-////////////////////////////////////////
-std::map<std::string, std::vector<LorentzVector>> readMomentaFromDat(
-	const std::string &filename,
-	const std::vector<std::string> &particleNames,
-	int nEvents = -1)
-{
-
-	std::map<std::string, std::vector<LorentzVector>> finalMomenta;
-
-	// 初始化粒子容器
-	for (const auto &name : particleNames)
-	{
-		finalMomenta[name] = std::vector<LorentzVector>();
-	}
-
-	std::ifstream file(filename);
-	if (!file.is_open())
-	{
-		std::cerr << "Error: Cannot open file " << filename << std::endl;
-		return finalMomenta;
-	}
-
-	std::string line;
-	int eventCount = 0;
-	int lineCount = 0;
-	int particlesPerEvent = particleNames.size();
-
-	while (std::getline(file, line))
-	{
-		if (line.empty())
-			continue;
-
-		std::istringstream iss(line);
-		double E, px, py, pz;
-
-		if (iss >> E >> px >> py >> pz)
-		{
-			// 根据行号确定粒子类型
-			int particleIndex = lineCount % particlesPerEvent;
-			const std::string &particleName = particleNames[particleIndex];
-
-			finalMomenta[particleName].emplace_back(E, px, py, pz);
-			lineCount++;
-
-			// 每读完一组粒子表示完成一个事件
-			if (particleIndex == particlesPerEvent - 1)
-			{
-				eventCount++;
-
-				// 如果指定了事件数并且已达到，则停止读取
-				if (nEvents > 0 && eventCount >= nEvents)
-				{
-					break;
-				}
-			}
-		}
-		else
-		{
-			std::cerr << "Warning: Invalid line format: " << line << std::endl;
-		}
-	}
-
-	file.close();
-
-	// std::cout << "Successfully read " << eventCount << " events from " << filename << std::endl;
-	return finalMomenta;
-}
+// 初始化静态成员变量
+std::vector<std::vector<int>> NLLFunction::con_trans_id_;
+std::vector<std::vector<std::complex<double>>> NLLFunction::con_trans_values_;
+bool NLLFunction::constraints_initialized_ = false;
 
 ////////////////////////////////////////
 ////////////////////////////////////////
@@ -400,13 +985,15 @@ public:
 
 	torch::Tensor getNLL(torch::Tensor &vector)
 	{
-		return NLLFunction::apply(vector, n_gls_, n_polar_, data_fix_, data_length, phsp_fix_, phsp_length, bkg_fix_, bkg_length, conjugate_pairs_);
+		return NLLFunction::apply(vector, n_gls_, n_polar_, data_fix_, data_length, phsp_fix_, phsp_length, bkg_fix_, bkg_length);
+		// return NLLFunction::apply(vector, n_gls_, n_polar_, data_fix_, data_length, phsp_fix_, phsp_length, bkg_fix_, bkg_length, con_trans_id_, con_trans_values_);
+		// return NLLFunction::apply(vector, n_gls_, n_polar_, data_fix_, data_length, phsp_fix_, phsp_length, bkg_fix_, bkg_length, conjugate_pairs_);
 		// return NLLFunction::apply(vector, n_gls_, n_polar_, data_fix_, data_length, phsp_fix_, phsp_length, bkg_fix_, bkg_length);
 	}
 
 	int getNVector() const
 	{
-		return n_gls_ - conjugate_pairs_.size();
+		return n_gls_ - con_trans_id_.size();
 	}
 
 	void writeWeightFile(torch::Tensor &vector, const std::string &filename)
@@ -420,39 +1007,136 @@ public:
 		// const int target_dev = vector.get_device();
 		torch::Device dev(torch::kCUDA, vector.get_device());
 
-		// 计算需要扩展的大小
-		for (const auto &pair : conjugate_pairs_)
-		{
-			extended_size = std::max(extended_size, std::max(pair.first, pair.second) + 1);
-		}
-
-		// if (extended_size == original_size)
+		// // 计算需要扩展的大小
+		// for (const auto &pair : conjugate_pairs_)
 		// {
-		// 	return vector.clone();
+		// 	extended_size = std::max(extended_size, std::max(pair.first, pair.second) + 1);
 		// }
 
-		// 创建扩展后的向量
-		torch::Tensor extended_vector = torch::zeros({extended_size}, torch::kComplexFloat).to(dev);
+		// // if (extended_size == original_size)
+		// // {
+		// // 	return vector.clone();
+		// // }
 
-		// 复制原始向量到扩展向量
-		extended_vector.slice(0, 0, original_size) = vector;
+		// // 创建扩展后的向量
+		// torch::Tensor extended_vector = torch::zeros({extended_size}, torch::kComplexFloat).to(dev);
 
-		// 设置共轭对
-		for (const auto &pair : conjugate_pairs_)
+		// // 复制原始向量到扩展向量
+		// extended_vector.slice(0, 0, original_size) = vector;
+
+		// // 设置共轭对
+		// for (const auto &pair : conjugate_pairs_)
+		// {
+		// 	int source_idx = pair.first;
+		// 	int conjugate_idx = pair.second;
+
+		// 	// std::cout << "Conjugate pair: " << source_idx << " <-> " << conjugate_idx << std::endl;
+
+		// 	if (source_idx < original_size && conjugate_idx < extended_size)
+		// 	{
+		// 		// 获取源元素的共轭
+		// 		torch::Tensor source_val = extended_vector[source_idx];
+		// 		// extended_vector[conjugate_idx] = torch::conj(source_val);
+		// 		extended_vector[conjugate_idx] = -1.0 * source_val;
+		// 	}
+		// }
+
+		for (const auto &vecid : con_trans_id_)
 		{
-			int source_idx = pair.first;
-			int conjugate_idx = pair.second;
-
-			// std::cout << "Conjugate pair: " << source_idx << " <-> " << conjugate_idx << std::endl;
-
-			if (source_idx < original_size && conjugate_idx < extended_size)
+			if (!vecid.empty())
 			{
-				// 获取源元素的共轭
-				torch::Tensor source_val = extended_vector[source_idx];
-				// extended_vector[conjugate_idx] = torch::conj(source_val);
-				extended_vector[conjugate_idx] = -1.0 * source_val;
+				auto max_it = std::max_element(vecid.begin(), vecid.end());
+				extended_size = std::max(extended_size, *max_it + 1);
 			}
 		}
+
+		torch::TensorOptions options = torch::TensorOptions().dtype(torch::kComplexFloat).device(dev);
+
+		torch::Tensor extended_vector = torch::zeros({extended_size}, options);
+
+		// 方法1：使用 PyTorch 的索引操作（在 GPU 上）
+		// 创建索引，选择原始部分
+		torch::Tensor indices = torch::arange(0, original_size, torch::kLong).to(dev);
+		extended_vector.index_copy_(0, indices, vector);
+
+		// 在 GPU 上处理约束
+		for (size_t i = 0; i < con_trans_id_.size(); ++i)
+		{
+			const auto &vecid = con_trans_id_[i];
+			const auto &values = con_trans_values_[i];
+
+			if (vecid.empty() || values.empty() || vecid.size() != values.size())
+			{
+				continue;
+			}
+
+			// 找到原始ID（最小值）
+			auto min_it = std::min_element(vecid.begin(), vecid.end());
+			int origin_idx = std::distance(vecid.begin(), min_it);
+			int origin_id = vecid[origin_idx];
+
+			// 确保原始ID有效
+			if (origin_id < 0 || origin_id >= original_size)
+			{
+				continue;
+			}
+
+			// 获取原始ID对应的系数
+			std::complex<double> origin_coeff = values[origin_idx];
+			double origin_coeff_real = std::real(origin_coeff);
+			double origin_coeff_imag = std::imag(origin_coeff);
+
+			// 检查分母不为零
+			if (std::abs(origin_coeff_real) < 1e-10 || std::abs(origin_coeff_imag) < 1e-10)
+			{
+				std::cerr << "Warning: origin coefficient too small, skipping constraint group " << i << std::endl;
+				continue;
+			}
+
+			// 为每个扩展ID设置值
+			for (size_t j = 0; j < vecid.size(); ++j)
+			{
+				if (j == origin_idx)
+					continue; // 跳过原始ID
+
+				int extended_id = vecid[j];
+
+				// 确保扩展ID有效且不超过values数组的大小
+				if (extended_id >= 0 && extended_id < extended_size && j < values.size())
+				{
+					std::complex<double> ext_coeff = values[j];
+					double ext_coeff_real = std::real(ext_coeff);
+					double ext_coeff_imag = std::imag(ext_coeff);
+
+					// 计算系数比例（直接在 GPU 上）
+					float real_ratio = static_cast<float>(ext_coeff_real / origin_coeff_real);
+					float imag_ratio = static_cast<float>(ext_coeff_imag / origin_coeff_imag);
+
+					// 在 GPU 上执行线性变换
+					// extended_vector[extended_id] = real_ratio * real_part + imag_ratio * imag_part
+
+					// 获取原始向量的值
+					torch::Tensor origin_value = vector[origin_id];
+
+					// 计算实部和虚部
+					torch::Tensor real_part = (origin_value + torch::conj(origin_value)) / 2.0f;
+					torch::Tensor imag_part = (origin_value - torch::conj(origin_value)) / (2.0f * c10::complex<float>(0, 1));
+
+					// 计算扩展值
+					torch::Tensor extended_real = real_ratio * real_part;
+					torch::Tensor extended_imag = imag_ratio * imag_part;
+
+					// 合并实部和虚部
+					torch::Tensor extended_value = extended_real + c10::complex<float>(0, 1) * extended_imag;
+
+					// 赋值
+					extended_vector[extended_id] = extended_value;
+				}
+			}
+		}
+
+		// 输出 extended_vector 内容用于调试
+		// std::cout << "Extended vector: " << extended_vector.cpu() << std::endl;
 
 		////////////////////////////////////////////////////////////////////////////
 		// std::cout << "Extended vector: " << extended_vector.cpu() << std::endl;
@@ -510,120 +1194,254 @@ public:
 		// }
 
 		int dataIntegral = data_length / n_polar_;
+		double normFactor = static_cast<double>(dataIntegral) / h_phsp_integral;
 
 		// 创建 ROOT 文件
 		TFile *rootFile = new TFile(filename.c_str(), "RECREATE");
 
-		// 创建 data 的 TTree
+		auto plotconfig = config_parser_.getPlotConfigs();
+
+		/*
+		struct PlotConfig
+		{
+			std::vector<std::vector<std::string>> particles;
+			std::vector<int> bins;
+			std::vector<std::vector<double>> ranges;
+			std::vector<std::string> display;
+			std::string type; // "mass", "cosbeta", "dalitz"
+		};
+		*/
+
+		std::vector<MassHistConfig> masshist;
+
+		for (const auto &histConfig : plotconfig)
+		{
+			// 输出histConfig内容以进行调试
+			// std::cout << "PlotConfig type: " << histConfig.type << std::endl;
+			if (histConfig.type == "mass")
+			{
+				std::vector<std::string> particles = histConfig.particles[0];
+				int bins = histConfig.bins[0];
+				std::vector<double> range = histConfig.ranges[0];
+				std::vector<std::string> display = histConfig.display;
+
+				std::string hist_name = "mass_";
+				for (const auto &p : particles)
+				{
+					hist_name += p;
+				}
+				std::cout << "Creating mass histogram: " << hist_name << std::endl;
+				std::cout << "  Particles: ";
+				for (const auto &p : particles)
+				{
+					std::cout << p << " ";
+				}
+				std::cout << std::endl;
+				std::cout << "  Bins: " << bins << std::endl;
+				std::cout << "  Range: [" << range[0] << ", " << range[1] << "]" << std::endl;
+				std::cout << "  Display: ";
+				for (const auto &d : display)
+				{
+					std::cout << d << " ";
+				}
+				std::cout << std::endl;
+
+				masshist.emplace_back(hist_name, "", particles, bins, range, display);
+			}
+		}
+		// masshist.emplace_back("mass_KpKm", "", std::vector<std::string>{"Kp", "Km"}, 100, std::vector<double>{1.0, 2.6}, std::vector<std::string>{"M(K^{+}K^{-}) (GeV/c^{2})"});
+		// masshist.emplace_back("mass_Kpeta", "", std::vector<std::string>{"Kp", "eta"}, 100, std::vector<double>{1.0, 2.6}, std::vector<std::string>{"M(K^{+}eta) (GeV/c^{2})"});
+
+		// 计算并保存data直方图
 		if (!Vp4_data_.empty())
 		{
-			TTree *dataTree = new TTree("t_data", "Data events with four-momenta");
 
-			// 为每个粒子创建 TLorentzVector 分支
-			std::map<std::string, TLorentzVector> data_vectors;
-			for (const auto &particle : Vp4_data_)
+			std::vector<TH1F *> hist_data;
+
+			for (const auto &histConfig : masshist)
 			{
-				data_vectors[particle.first] = TLorentzVector();
-				dataTree->Branch(particle.first.c_str(), &data_vectors[particle.first]);
+				TH1F *hist = new TH1F(histConfig.name.c_str(), histConfig.title.c_str(), histConfig.bins, histConfig.range[0], histConfig.range[1]);
+				hist_data.emplace_back(hist);
 			}
 
-			// 填充 data tree
-			int n_data_events = Vp4_data_.begin()->second.size();
-			for (int i = 0; i < n_data_events; ++i)
+			CalculateMassHist(Vp4_data_, masshist, nullptr, hist_data);
+
+			for (size_t i = 0; i < masshist.size(); ++i)
 			{
-				for (const auto &particle : Vp4_data_)
-				{
-					const auto &lv = particle.second[i];
-					data_vectors[particle.first].SetPxPyPzE(lv.Px, lv.Py, lv.Pz, lv.E);
-				}
-				dataTree->Fill();
+				TDirectory *histDir = rootFile->mkdir(masshist[i].name.c_str());
+				histDir->cd();
+				hist_data[i]->Write("hdata");
+
+				TObjString xlabel_obj(masshist[i].tex[0].c_str());
+				TObjString ylabel_obj(masshist[i].tex[1].c_str());
+				xlabel_obj.Write("xlabel");
+				ylabel_obj.Write("ylabel");
+				delete hist_data[i];
 			}
-			dataTree->Write();
-			delete dataTree;
 		}
 
-		// 创建 phsp 的 TTree
+		// 计算并保存拟合结果直方图
 		if (!Vp4_phsp_.empty())
 		{
-			TTree *phspTree = new TTree("t_phsp", "Phase space events with weights");
 
-			// 为每个粒子创建 TLorentzVector 分支
-			std::map<std::string, TLorentzVector> phsp_vectors;
-			for (const auto &particle : Vp4_phsp_)
+			std::vector<TH1F *> hist_fit;
+
+			for (const auto &histConfig : masshist)
 			{
-				phsp_vectors[particle.first] = TLorentzVector();
-				phspTree->Branch(particle.first.c_str(), &phsp_vectors[particle.first]);
+				TH1F *hist = new TH1F(histConfig.name.c_str(), histConfig.title.c_str(), histConfig.bins, histConfig.range[0], histConfig.range[1]);
+				hist_fit.emplace_back(hist);
 			}
 
-			// 添加权重分支
-			double total_weight;
-			std::vector<double> partial_weights(npartials);
-			phspTree->Branch("totalweight", &total_weight);
+			CalculateMassHist(Vp4_phsp_, masshist, h_total_results, hist_fit);
 
-			// 为每个部分波创建分支
-			for (int i = 0; i < npartials; ++i)
+			for (size_t i = 0; i < masshist.size(); ++i)
 			{
-				std::string branch_name = "partialweight_" + std::to_string(i);
-				phspTree->Branch(branch_name.c_str(), &partial_weights[i]);
+				TDirectory *histDir = rootFile->GetDirectory(masshist[i].name.c_str());
+				histDir->cd();
+				hist_fit[i]->Write("hfit");
+				delete hist_fit[i];
 			}
-
-			// 填充 phsp tree
-			for (int i = 0; i < n_events; ++i)
-			{
-				// 设置四动量
-				for (const auto &particle : Vp4_phsp_)
-				{
-					const auto &lv = particle.second[i];
-					phsp_vectors[particle.first].SetPxPyPzE(lv.Px, lv.Py, lv.Pz, lv.E);
-				}
-
-				// 设置权重
-				total_weight = h_total_results[i] / h_phsp_integral * static_cast<double>(dataIntegral);
-				// std::cout << "Event " << i << ": Total Weight = " << total_weight << std::endl;
-				for (int j = 0; j < npartials; ++j)
-				{
-					partial_weights[j] = h_partial_results[i * npartials + j] * static_cast<double>(dataIntegral) / h_phsp_integral;
-					// std::cout << "  Partial Weight " << j << " = " << partial_weights[j] << std::endl;
-				}
-
-				phspTree->Fill();
-			}
-
-			// write legend branches
-			phspTree->Branch("legends", &legends_);
-			phspTree->Fill();
-
-			phspTree->Write();
-			delete phspTree;
 		}
 
-		// 创建 bkg 的 TTree
+		// 计算并保存本底直方图
 		if (!Vp4_bkg_.empty())
 		{
-			TTree *bkgTree = new TTree("t_bkg", "Background events with four-momenta");
 
-			// 为每个粒子创建 TLorentzVector 分支
-			std::map<std::string, TLorentzVector> bkg_vectors;
-			for (const auto &particle : Vp4_bkg_)
+			std::vector<TH1F *> hist_bkg;
+
+			for (const auto &histConfig : masshist)
 			{
-				bkg_vectors[particle.first] = TLorentzVector();
-				bkgTree->Branch(particle.first.c_str(), &bkg_vectors[particle.first]);
+				TH1F *hist = new TH1F(histConfig.name.c_str(), histConfig.title.c_str(), histConfig.bins, histConfig.range[0], histConfig.range[1]);
+				hist_bkg.emplace_back(hist);
 			}
 
-			// 填充 bkg tree
-			int n_bkg_events = Vp4_bkg_.begin()->second.size();
-			for (int i = 0; i < n_bkg_events; ++i)
+			CalculateMassHist(Vp4_bkg_, masshist, nullptr, hist_bkg);
+
+			for (size_t i = 0; i < masshist.size(); ++i)
 			{
-				for (const auto &particle : Vp4_bkg_)
-				{
-					const auto &lv = particle.second[i];
-					bkg_vectors[particle.first].SetPxPyPzE(lv.Px, lv.Py, lv.Pz, lv.E);
-				}
-				bkgTree->Fill();
+				TDirectory *histDir = rootFile->GetDirectory(masshist[i].name.c_str());
+				histDir->cd();
+				hist_bkg[i]->Write("hbkg");
+				delete hist_bkg[i];
 			}
-			bkgTree->Write();
-			delete bkgTree;
 		}
+
+		//
+		if (!Vp4_phsp_.empty())
+		{
+			for (int i = 0; i < npartials; ++i)
+			{
+				// 为当前部分创建直方图
+				std::vector<TH1F *> partialHists;
+
+				// 为每个配置创建直方图
+				for (const auto &histConfig : masshist)
+				{
+					TH1F *hist = new TH1F(histConfig.name.c_str(), histConfig.title.c_str(), histConfig.bins, histConfig.range[0], histConfig.range[1]);
+					partialHists.push_back(hist);
+				}
+
+				// 计算直方图，传入数据和输出直方图
+				CalculateMassHist(Vp4_phsp_, masshist, &h_partial_results[i * n_events], partialHists);
+
+				// 写入文件并清理
+				for (size_t j = 0; j < partialHists.size(); ++j)
+				{
+
+					TDirectory *histDir = rootFile->GetDirectory(masshist[j].name.c_str());
+					histDir->cd();
+
+					std::string partial_dir_name = "h_" + amplitude_names_[i];
+
+					TH1F *hist = partialHists[j];
+					hist->Scale(normFactor);
+					hist->Write(partial_dir_name.c_str());
+
+					delete hist;
+				}
+
+				// 清空向量
+				partialHists.clear();
+			}
+		}
+
+		// if (!Vp4_phsp_.empty())
+		// {
+		// 	std::vector<HistogramConfig> histConfigs_fit;
+		// 	for (const auto &histConfig : histConfigs)
+		// 	{
+		// 		histConfigs_fit.emplace_back(histConfig.name, histConfig.title, histConfig.particles, histConfig.bins, histConfig.range);
+		// 	}
+
+		// 	CalculateHist(Vp4_phsp_, histConfigs_fit, h_total_results);
+
+		// 	for (const auto &histConfig : histConfigs_fit)
+		// 	{
+		// 		TDirectory *histDir = rootFile->GetDirectory(histConfig.name.c_str());
+		// 		// if (!histDir)
+		// 		// {
+		// 		// 	histDir = rootFile->mkdir(histConfig.name.c_str());
+		// 		// }
+		// 		histDir->cd();
+		// 		// if (histConfig.hist)
+		// 		// {
+		// 		histConfig.hist->Scale(normFactor);
+		// 		histConfig.hist->Write("hfit");
+		// 		// }
+		// 	}
+		// }
+
+		// if (!Vp4_phsp_.empty())
+		// {
+		// 	for (int i = 0; i < npartials; ++i)
+		// 	{
+
+		// 		std::vector<HistogramConfig> histConfigs_partial;
+
+		// 		for (const auto &histConfig : histConfigs)
+		// 		{
+		// 			histConfigs_partial.emplace_back(histConfig.name, histConfig.title, histConfig.particles, histConfig.bins, histConfig.range);
+		// 		}
+
+		// 		CalculateHist(Vp4_phsp_, histConfigs_partial, &h_partial_results[i * n_events]);
+
+		// 		for (const auto &histConfig : histConfigs_partial)
+		// 		{
+		// 			TDirectory *histDir = rootFile->GetDirectory(histConfig.name.c_str());
+
+		// 			std::cout << histConfig.name << std::endl;
+
+		// 			std::string partial_dir_name = "h_" + amplitude_names_[i];
+		// 			histConfig.hist->Scale(normFactor);
+		// 			histConfig.hist->Write(partial_dir_name.c_str());
+		// 		}
+		// 	}
+		// }
+
+		// if (!Vp4_bkg_.empty())
+		// {
+
+		// 	std::vector<HistogramConfig> histConfigs_bkg;
+
+		// 	for (const auto &histConfig : histConfigs)
+		// 	{
+		// 		histConfigs_bkg.emplace_back(histConfig.name, histConfig.title, histConfig.particles, histConfig.bins, histConfig.range);
+		// 	}
+
+		// 	CalculateHist(Vp4_bkg_, histConfigs_bkg, nullptr);
+
+		// 	for (const auto &histConfig : histConfigs_bkg)
+		// 	{
+		// 		TDirectory *histDir = rootFile->GetDirectory(histConfig.name.c_str());
+		// 		// if (!histDir)
+		// 		// {
+		// 		// TDirectory *histDir = rootFile->mkdir(histConfig.name.c_str());
+		// 		// }
+		// 		histDir->cd();
+		// 		// histConfig.hist->Scale(normFactor);
+		// 		histConfig.hist->Write("hbkg");
+		// 	}
+		// }
 
 		// TTree *legend = new TTree("legends", "Amplitude Legends");
 		// legend->Branch("legend", &legends_);
@@ -691,9 +1509,9 @@ public:
 		return output;
 	}
 
-	std::vector<std::pair<int, int>> getConjugatePairs() const
+	std::vector<std::vector<int>> getConstraints() const
 	{
-		return conjugate_pairs_;
+		return con_trans_id_;
 	}
 
 	std::vector<std::string> getAmplitudeNames() const
@@ -718,9 +1536,13 @@ private:
 	std::map<std::string, std::vector<LorentzVector>> Vp4_bkg_;
 
 	// amplitude 信息
-	std::vector<std::pair<int, int>> conjugate_pairs_;
 	std::vector<std::string> amplitude_names_;
 	std::vector<std::string> legends_;
+
+	// 约束信息
+	// std::vector<std::pair<int, int>> conjugate_pairs_;
+	std::vector<std::vector<int>> con_trans_id_;
+	std::vector<std::vector<std::complex<double>>> con_trans_values_;
 
 	// config 初始化
 	ConfigParser config_parser_;
@@ -738,7 +1560,7 @@ private:
 		std::cout << "  Particles: " << config_parser_.getParticles().size() << std::endl;
 		std::cout << "  Decay chains: " << config_parser_.getDecayChains().size() << std::endl;
 		std::cout << "  Resonances: " << config_parser_.getResonances().size() << std::endl;
-		std::cout << "  Conjugate pairs: " << config_parser_.getConjugatePairs().size() << std::endl;
+		std::cout << "  Constraints: " << config_parser_.getConstraints().size() << std::endl;
 
 		// 初始化粒子信息
 		initializeParticles();
@@ -747,85 +1569,52 @@ private:
 		// 初始化衰变链
 		initializeDecayChains();
 
-		// // 创建振幅计算器，自动读取配置
-		// AmplitudeCalculator calculator(config_file);
-
 		// // 获取配置信息
 		// const auto &config_parser = calculator.getConfigParser();
 		const auto &data_files = config_parser_.getDataFiles();
 		const auto &dat_order = config_parser_.getDatOrder();
 
-		legends_ = config_parser_.getCustomLegends();
+		legends_ = config_parser_.getLegends();
 		n_gls_ = n_amplitudes_;
 
+		std::vector<std::string> particles_names;
+		for (const auto &particle : particles_)
+		{
+			particles_names.push_back(particle.name);
+		}
+
 		// 计算相空间振幅
-		std::cout << "Calculating phase space amplitudes..." << std::endl;
-		std::cout << "Reading phase space data..." << std::endl;
-		Vp4_phsp_ = readMomentaFromDat(data_files.at("phsp")[0], dat_order);
+		std::cout << "Reading phase space samples..." << std::endl;
+		Vp4_phsp_ = readMomentaFromDat(data_files.at("phsp")[0], dat_order, particles_names);
 		std::cout << "Phase space events: " << Vp4_phsp_.begin()->second.size() << std::endl;
+		std::cout << "Calculating phase space amplitudes..." << std::endl;
 		phsp_fix_ = calculateAmplitudes(Vp4_phsp_);
 		phsp_length = Vp4_phsp_.begin()->second.size() * n_polar_;
 
 		// 计算数据振幅
+		std::cout << "Reading data samples..." << std::endl;
+		Vp4_data_ = readMomentaFromDat(data_files.at("data")[0], dat_order, particles_names);
+		std::cout << "data events: " << Vp4_data_.begin()->second.size() << std::endl;
 		std::cout << "Calculating data amplitudes..." << std::endl;
-		std::cout << "Reading data events..." << std::endl;
-		Vp4_data_ = readMomentaFromDat(data_files.at("data")[0], dat_order);
-		std::cout << "Data events: " << Vp4_data_.begin()->second.size() << std::endl;
 		data_fix_ = calculateAmplitudes(Vp4_data_);
 		data_length = Vp4_data_.begin()->second.size() * n_polar_;
 
 		// 计算本底振幅
 		if (data_files.count("bkg") > 0)
 		{
-			std::cout << "Calculating background amplitudes..." << std::endl;
-			std::cout << "Reading background data..." << std::endl;
-			Vp4_bkg_ = readMomentaFromDat(data_files.at("bkg")[0], dat_order);
+			std::cout << "Reading background samples..." << std::endl;
+			Vp4_bkg_ = readMomentaFromDat(data_files.at("bkg")[0], dat_order, particles_names);
 			std::cout << "Background events: " << Vp4_bkg_.begin()->second.size() << std::endl;
+			std::cout << "Calculating background amplitudes..." << std::endl;
 			bkg_fix_ = calculateAmplitudes(Vp4_bkg_);
 			bkg_length = Vp4_bkg_.begin()->second.size() * n_polar_;
 		}
 
-		// // 计算相空间振幅
-		// // std::cout << "Calculating phase space amplitudes..." << std::endl;
-		// phsp_fix_ = calculator.calculateAmplitudes(Vp4_phsp_, 1);
-		// std::cout << "Reading phase space data..." << std::endl;
-		// std::cout << "Phase space events: " << Vp4_phsp_.begin()->second.size() << std::endl;
-		// n_gls_ = calculator.getNAmplitudes();
-		// n_polar_ = calculator.getNPolarization(); // 假设每个事件有3个极化状态
-		// phsp_length = Vp4_phsp_.begin()->second.size() * n_polar_;
-
-		// // std::cout << "Number of amplitudes (n_gls_): " << n_gls_ << std::endl;
-
-		// // 读取数据
-		// std::cout << "Reading data..." << std::endl;
-		// Vp4_data_ = readMomentaFromDat(data_files.at("data")[0], dat_order);
-		// std::cout << "Data events: " << Vp4_data_.begin()->second.size() << std::endl;
-
-		// // 计算数据振幅
-		// // std::cout << "Calculating data amplitudes..." << std::endl;
-		// data_fix_ = calculator.calculateAmplitudes(Vp4_data_, 0);
-		// data_length = Vp4_data_.begin()->second.size() * n_polar_;
-
-		// // 读取背景数据
-		// if (data_files.count("bkg") > 0)
-		// {
-		// 	std::cout << "Reading background data..." << std::endl;
-		// 	Vp4_bkg_ = readMomentaFromDat(data_files.at("bkg")[0], dat_order);
-		// 	std::cout << "Background events: " << Vp4_bkg_.begin()->second.size() << std::endl;
-		// 	// 计算背景振幅
-		// 	// std::cout << "Calculating background amplitudes..." << std::endl;
-		// 	bkg_fix_ = calculator.calculateAmplitudes(Vp4_bkg_, 0);
-		// 	bkg_length = Vp4_bkg_.begin()->second.size() * n_polar_;
-		// }
-
-		// // 获取振幅名称和共轭对信息
-		// amplitude_names_ = calculator.getAmplitudeNames();
-		// conjugate_pairs_ = calculator.getConjugatePairIndices();
-		// nSLvectors_ = calculator.getNSLVectors();
+		NLLFunction::setConstraints(con_trans_id_, con_trans_values_);
 
 		std::cout << "Number of partial waves (n_gls_): " << n_gls_ << std::endl;
 		std::cout << "Number of amplitude names: " << amplitude_names_.size() << std::endl;
-		std::cout << "Number of constraints: " << conjugate_pairs_.size() << std::endl;
+		// std::cout << "Number of constraints: " << conjugate_pairs_.size() << std::endl;
 		std::cout << "Initialization complete." << std::endl;
 	}
 
@@ -1068,41 +1857,65 @@ private:
 		}
 
 		// 设置约束条件
-		auto conjugate_name = config_parser_.getConjugatePairs();
-		std::vector<int> idx1;
-		std::vector<int> idx2;
-		for (const auto &pair : conjugate_name)
+		auto constraints = config_parser_.getConstraints();
+
+		for (const auto &constraint : constraints)
 		{
-			for (int i = 0; i < amplitude_names_.size(); ++i)
+			std::vector<std::vector<int>> amp_ids_con;
+
+			for (const auto &amp_name : constraint.names)
 			{
-				if (amplitude_names_[i].find(pair.first) != std::string::npos)
+				std::vector<int> amp_ids;
+				for (int i = 0; i < amplitude_names_.size(); ++i)
 				{
-					idx1.push_back(i);
+					if (amplitude_names_[i].find(amp_name) != std::string::npos)
+					{
+						amp_ids.push_back(i);
+					}
 				}
-				if (amplitude_names_[i].find(pair.second) != std::string::npos)
-				{
-					idx2.push_back(i);
-				}
+				amp_ids_con.push_back(amp_ids);
 			}
-		}
-		if (idx1.size() != idx2.size())
-		{
-			std::cerr << "Error: Mismatched conjugate pair sizes!" << std::endl;
-		}
-		else
-		{
-			for (int i = 0; i < idx1.size(); ++i)
+
+			// 生成所有组合
+			// std::vector<std::vector<int>> all_combinations;
+			// std::vector<std::vector<std::complex<double>>> con_values;
+			int num_constraints = amp_ids_con.size();
+			for (int i = 0; i < amp_ids_con[0].size(); ++i)
 			{
-				// std::cout << "Conjugate pair: " << amplitude_names_[idx1[i]] << " <-> " << amplitude_names_[idx2[i]] << std::endl;
-				if (idx1[i] < idx2[i])
+				// // 先输出amp_ids_con内容和amplitude_names_对应关系，便于调试
+				// std::cout << "Constraint: " << i;
+				// for (int j = 0; j < num_constraints; ++j)
+				// {
+				// 	std::cout << amplitude_names_[amp_ids_con[j][i]] << "( " << amp_ids_con[j][i] << " ) ";
+				// }
+				// std::cout << std::endl;
+				std::vector<int> combination;
+				for (int j = 0; j < num_constraints; ++j)
 				{
-					conjugate_pairs_.emplace_back(idx1[i], idx2[i]);
+					combination.push_back(amp_ids_con[j][i]);
 				}
-				else if (idx2[i] < idx1[i])
+				// all_combinations.push_back(combination);
+				con_trans_id_.push_back(combination);
+
+				// 第一个是{1+1j}, 后面是constraint.values
+				std::vector<std::complex<double>> values = {std::complex<double>(1.0, 1.0)};
+				for (const auto &val : constraint.values)
 				{
-					conjugate_pairs_.emplace_back(idx2[i], idx1[i]);
+					values.push_back(val);
 				}
+				// con_values.push_back(values);
+				con_trans_values_.push_back(values);
 			}
+
+			// for (int i = 0; i < con_trans_id_.size(); ++i)
+			// {
+			// 	std::cout << "Constraint IDs: ";
+			// 	for (const auto &id : con_trans_id_[i])
+			// 	{
+			// 		std::cout << id << " ";
+			// 	}
+			// 	std::cout << std::endl;
+			// }
 		}
 	}
 
@@ -1229,6 +2042,6 @@ PYBIND11_MODULE(ctpwa, m)
 		.def("getDataTensor", &analysis::getDataTensor)
 		.def("getPhspTensor", &analysis::getPhspTensor)
 		.def("getBkgTensor", &analysis::getBkgTensor)
-		.def("getConjugatePairs", &analysis::getConjugatePairs)
+		.def("getConjugatePairs", &analysis::getConstraints)
 		.def("getAmplitudeNames", &analysis::getAmplitudeNames);
 }
