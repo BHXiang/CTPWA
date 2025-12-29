@@ -42,22 +42,64 @@ std::vector<std::string> ConfigParser::getLegends() const
     {
         if (!chain.legend_template.empty())
         {
-            // 检查legend模板中的占位符
-            std::map<std::string, std::vector<std::string>> placeholder_map;
+            // 解析legend模板中的占位符（可能带有索引如R_Kpeta[0]）
+            struct PlaceholderInfo
+            {
+                std::string full_name; // 原始字符串，如 "R_Kpeta[0]"
+                std::string base_name; // 基础占位符名，如 "R_Kpeta"
+                int index;             // 索引，如 0，-1表示无索引
+            };
+
+            std::vector<PlaceholderInfo> placeholder_infos;
             std::vector<std::string> template_items;
+
+            // 首先，收集所有唯一的占位符基础名
+            std::map<std::string, std::vector<std::string>> placeholder_resonances;
+            std::map<std::string, PlaceholderInfo> placeholder_info_map; // full_name -> PlaceholderInfo
 
             for (const auto &item : chain.legend_template)
             {
-                // 检查是否是中间态占位符（以R_开头）
-                if (item.find("R_") == 0)
+                template_items.push_back(item);
+
+                // 检查是否是中间态占位符（包含"R_"）
+                if (item.find("R_") != std::string::npos)
                 {
-                    // 如果这个占位符还没有处理过，找到对应的共振态链
-                    if (placeholder_map.find(item) == placeholder_map.end())
+                    PlaceholderInfo info;
+                    info.full_name = item;
+
+                    // 解析索引语法：R_Kpeta[0]
+                    size_t bracket_pos = item.find('[');
+                    if (bracket_pos != std::string::npos && item.back() == ']')
+                    {
+                        // 带有索引
+                        info.base_name = item.substr(0, bracket_pos);
+                        std::string index_str = item.substr(bracket_pos + 1, item.length() - bracket_pos - 2);
+                        try
+                        {
+                            info.index = std::stoi(index_str);
+                        }
+                        catch (...)
+                        {
+                            info.index = -1; // 索引解析失败
+                        }
+                    }
+                    else
+                    {
+                        // 无索引
+                        info.base_name = item;
+                        info.index = -1;
+                    }
+
+                    placeholder_infos.push_back(info);
+                    placeholder_info_map[info.full_name] = info;
+
+                    // 如果这个基础占位符还没有处理过，收集对应的共振态
+                    if (placeholder_resonances.find(info.base_name) == placeholder_resonances.end())
                     {
                         std::vector<std::string> resonances;
                         for (const auto &res_chain : chain.resonance_chains)
                         {
-                            if (res_chain.intermediate == item)
+                            if (res_chain.intermediate == info.base_name)
                             {
                                 for (const auto &spin_chain : res_chain.spin_chains)
                                 {
@@ -68,110 +110,183 @@ std::vector<std::string> ConfigParser::getLegends() const
                                 break;
                             }
                         }
-                        placeholder_map[item] = resonances;
+                        placeholder_resonances[info.base_name] = resonances;
                     }
                 }
-                template_items.push_back(item);
             }
 
-            // 生成所有组合
-            if (!placeholder_map.empty())
+            // 如果没有占位符，直接生成legend
+            if (placeholder_infos.empty())
             {
-                // 获取唯一的占位符列表
-                std::vector<std::string> unique_placeholders;
-                for (const auto &[placeholder, resonances] : placeholder_map)
+                std::string legend;
+                for (const auto &item : chain.legend_template)
                 {
-                    unique_placeholders.push_back(placeholder);
-                }
-
-                // 为每个唯一占位符生成共振态组合
-                std::vector<std::vector<std::string>> combinations = {{}};
-                for (const auto &placeholder : unique_placeholders)
-                {
-                    const auto &resonance_list = placeholder_map[placeholder];
-                    std::vector<std::vector<std::string>> temp;
-                    for (const auto &current_combo : combinations)
+                    // 检查是否是粒子
+                    auto particle_it = std::find_if(particles_.begin(), particles_.end(),
+                                                    [&](const Particle &p)
+                                                    { return p.name == item; });
+                    if (particle_it != particles_.end())
                     {
-                        for (const auto &resonance : resonance_list)
+                        // 粒子，使用其tex（如果是数组，使用所有部分）
+                        for (const auto &tex_part : particle_it->tex)
                         {
-                            std::vector<std::string> new_combo = current_combo;
-                            new_combo.push_back(resonance);
-                            temp.push_back(new_combo);
+                            legend += tex_part;
                         }
                     }
-                    combinations = std::move(temp);
-                }
-
-                // 为每个组合生成legend
-                for (const auto &combo : combinations)
-                {
-                    std::vector<std::string> particles_for_legend;
-
-                    // 创建占位符到共振态的映射
-                    std::map<std::string, std::string> placeholder_to_resonance;
-                    for (size_t i = 0; i < unique_placeholders.size(); ++i)
+                    else
                     {
-                        placeholder_to_resonance[unique_placeholders[i]] = combo[i];
-                    }
-
-                    // 构建legend
-                    for (const auto &item : template_items)
-                    {
-                        if (item.find("R_") == 0)
+                        // 检查是否是共振态
+                        auto res_it = resonances_.find(item);
+                        if (res_it != resonances_.end())
                         {
-                            particles_for_legend.push_back(placeholder_to_resonance[item]);
+                            // 共振态，使用所有tex部分
+                            for (const auto &tex_part : res_it->second.tex)
+                            {
+                                legend += tex_part;
+                            }
                         }
                         else
                         {
-                            particles_for_legend.push_back(item);
+                            // 字符串字面量，直接添加
+                            legend += item;
                         }
                     }
+                }
+                legends.push_back(legend);
+                continue;
+            }
 
-                    std::string legend = generateLegend(particles_for_legend);
-                    legends.push_back(legend);
+            // 按基础名分组：相同基础名的占位符使用同一个共振态
+            // 收集唯一的基础名
+            std::vector<std::string> unique_base_names;
+            for (const auto &info : placeholder_infos)
+            {
+                if (std::find(unique_base_names.begin(), unique_base_names.end(), info.base_name) == unique_base_names.end())
+                {
+                    unique_base_names.push_back(info.base_name);
                 }
             }
-            else
+
+            // 为每个基础名生成共振态选择（所有共振态）
+            std::map<std::string, std::vector<std::string>> base_name_choices;
+            for (const auto &base_name : unique_base_names)
             {
-                // 如果没有占位符，直接生成legend
-                std::string legend = generateLegend(chain.legend_template);
+                base_name_choices[base_name] = placeholder_resonances[base_name];
+            }
+
+            // 生成组合：每个基础名选择一个共振态
+            std::vector<std::vector<std::string>> combinations = {{}};
+            for (const auto &base_name : unique_base_names)
+            {
+                const auto &choices = base_name_choices[base_name];
+                std::vector<std::vector<std::string>> temp;
+                for (const auto &current_combo : combinations)
+                {
+                    for (const auto &choice : choices)
+                    {
+                        std::vector<std::string> new_combo = current_combo;
+                        new_combo.push_back(choice); // 这个choice是该基础名选择的共振态
+                        temp.push_back(new_combo);
+                    }
+                }
+                combinations = std::move(temp);
+            }
+
+            // 为每个组合生成legend
+            for (const auto &combo : combinations)
+            {
+                // 创建基础名到共振态的映射
+                std::map<std::string, std::string> base_name_to_resonance;
+                for (size_t i = 0; i < unique_base_names.size(); ++i)
+                {
+                    base_name_to_resonance[unique_base_names[i]] = combo[i];
+                }
+
+                // 创建占位符到共振态的映射（通过基础名）
+                std::map<std::string, std::string> placeholder_to_resonance;
+                for (const auto &info : placeholder_infos)
+                {
+                    auto it = base_name_to_resonance.find(info.base_name);
+                    if (it != base_name_to_resonance.end())
+                    {
+                        placeholder_to_resonance[info.full_name] = it->second;
+                    }
+                }
+
+                // 直接构建legend字符串
+                std::string legend;
+                for (const auto &item : template_items)
+                {
+                    if (item.find("R_") != std::string::npos)
+                    {
+                        // 是占位符
+                        auto it_placeholder = placeholder_info_map.find(item);
+                        auto it_resonance = placeholder_to_resonance.find(item);
+
+                        if (it_placeholder != placeholder_info_map.end() && it_resonance != placeholder_to_resonance.end())
+                        {
+                            const PlaceholderInfo &info = it_placeholder->second;
+                            const std::string &resonance_name = it_resonance->second;
+
+                            // 查找共振态的tex数组
+                            auto res_it = resonances_.find(resonance_name);
+                            if (res_it != resonances_.end())
+                            {
+                                const auto &tex_parts = res_it->second.tex;
+                                if (info.index >= 0 && info.index < (int)tex_parts.size())
+                                {
+                                    // 有索引，选择对应的tex部分
+                                    legend += tex_parts[info.index];
+                                }
+                                else if (info.index == -1)
+                                {
+                                    // 无索引，使用所有tex部分
+                                    for (const auto &tex_part : tex_parts)
+                                    {
+                                        legend += tex_part;
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                // 共振态未找到，使用名称
+                                legend += resonance_name;
+                            }
+                        }
+                        else
+                        {
+                            legend += item;
+                        }
+                    }
+                    else
+                    {
+                        // 普通字符串或粒子名
+                        // 检查是否是粒子
+                        auto particle_it = std::find_if(particles_.begin(), particles_.end(),
+                                                        [&](const Particle &p)
+                                                        { return p.name == item; });
+                        if (particle_it != particles_.end())
+                        {
+                            // 粒子，使用其tex（如果是数组，使用所有部分）
+                            for (const auto &tex_part : particle_it->tex)
+                            {
+                                legend += tex_part;
+                            }
+                        }
+                        else
+                        {
+                            // 字符串字面量，直接添加
+                            legend += item;
+                        }
+                    }
+                }
+
                 legends.push_back(legend);
             }
         }
     }
 
     return legends;
-}
-
-std::string ConfigParser::generateLegend(const std::vector<std::string> &particles) const
-{
-    std::string legend;
-    for (size_t i = 0; i < particles.size(); ++i)
-    {
-        const auto &name = particles[i];
-
-        // 检查是否是粒子
-        auto particle_it = std::find_if(particles_.begin(), particles_.end(),
-                                        [&](const Particle &p)
-                                        { return p.name == name; });
-        if (particle_it != particles_.end())
-        {
-            legend += particle_it->tex;
-        }
-        else
-        {
-            // 检查是否是共振态
-            auto res_it = resonances_.find(name);
-            if (res_it != resonances_.end())
-                legend += res_it->second.tex;
-            else
-                legend += name; // 原始名称
-        }
-
-        if (i < particles.size() - 1)
-            legend += " ";
-    }
-    return legend;
 }
 
 void ConfigParser::parseParticles(const YAML::Node &node)
@@ -186,7 +301,21 @@ void ConfigParser::parseParticles(const YAML::Node &node)
         particle.spin = props["J"].as<int>();
         particle.parity = props["P"].as<int>();
         particle.mass = props["mass"].as<double>();
-        particle.tex = props["tex"].as<std::string>();
+
+        // 处理tex字段，可能是字符串或字符串数组
+        if (props["tex"].IsSequence())
+        {
+            // tex是数组
+            for (const auto &tex_part : props["tex"])
+            {
+                particle.tex.push_back(tex_part.as<std::string>());
+            }
+        }
+        else
+        {
+            // 单个字符串，放入向量中
+            particle.tex.push_back(props["tex"].as<std::string>());
+        }
 
         particles_.push_back(particle);
     }
@@ -289,7 +418,20 @@ void ConfigParser::parseResonances(const YAML::Node &node)
         res.P = props["P"].as<int>();
         res.type = props["model"].as<std::string>();
         res.parameters = props["parameters"].as<std::vector<double>>();
-        res.tex = props["tex"].as<std::string>();
+        // 处理tex字段，可能是字符串或字符串数组
+        if (props["tex"].IsSequence())
+        {
+            // tex是数组
+            for (const auto &tex_part : props["tex"])
+            {
+                res.tex.push_back(tex_part.as<std::string>());
+            }
+        }
+        else
+        {
+            // 单个字符串，放入向量中
+            res.tex.push_back(props["tex"].as<std::string>());
+        }
 
         resonances_[name] = res;
     }

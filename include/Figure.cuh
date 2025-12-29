@@ -9,6 +9,7 @@
 #include <TH1F.h>
 #include <TH2F.h>
 #include <TROOT.h>
+#include <TLorentzVector.h>
 
 // 直方图配置结构体（包含直方图对象）
 struct MassHistConfig
@@ -47,12 +48,12 @@ struct DalitzHistConfig
     std::string title;
     std::vector<std::vector<std::string>> particles;
     std::vector<int> bins;
-    std::vector<double> range;
+    std::vector<std::vector<double>> range;
     std::vector<std::string> tex;
 
     DalitzHistConfig(const std::string &n, const std::string &t,
                      const std::vector<std::vector<std::string>> &p,
-                     const std::vector<int> &b, const std::vector<double> &r, const std::vector<std::string> &te = {})
+                     const std::vector<int> &b, const std::vector<std::vector<double>> &r, const std::vector<std::string> &te = {})
         : name(n), title(t), particles(p), bins(b), range(r), tex(te) {}
 };
 

@@ -996,7 +996,7 @@ public:
 		return n_gls_ - con_trans_id_.size();
 	}
 
-	void writeWeightFile(torch::Tensor &vector, const std::string &filename)
+	void writeWeightFile(torch::Tensor &vector, const std::string &filename, const int is_saved_weight = 0)
 	{
 		TORCH_CHECK(vector.is_cuda(), "vector must be on CUDA");
 		TORCH_CHECK(vector.dtype() == torch::kComplexFloat, "vector must be complex128");
@@ -1006,40 +1006,6 @@ public:
 
 		// const int target_dev = vector.get_device();
 		torch::Device dev(torch::kCUDA, vector.get_device());
-
-		// // 计算需要扩展的大小
-		// for (const auto &pair : conjugate_pairs_)
-		// {
-		// 	extended_size = std::max(extended_size, std::max(pair.first, pair.second) + 1);
-		// }
-
-		// // if (extended_size == original_size)
-		// // {
-		// // 	return vector.clone();
-		// // }
-
-		// // 创建扩展后的向量
-		// torch::Tensor extended_vector = torch::zeros({extended_size}, torch::kComplexFloat).to(dev);
-
-		// // 复制原始向量到扩展向量
-		// extended_vector.slice(0, 0, original_size) = vector;
-
-		// // 设置共轭对
-		// for (const auto &pair : conjugate_pairs_)
-		// {
-		// 	int source_idx = pair.first;
-		// 	int conjugate_idx = pair.second;
-
-		// 	// std::cout << "Conjugate pair: " << source_idx << " <-> " << conjugate_idx << std::endl;
-
-		// 	if (source_idx < original_size && conjugate_idx < extended_size)
-		// 	{
-		// 		// 获取源元素的共轭
-		// 		torch::Tensor source_val = extended_vector[source_idx];
-		// 		// extended_vector[conjugate_idx] = torch::conj(source_val);
-		// 		extended_vector[conjugate_idx] = -1.0 * source_val;
-		// 	}
-		// }
 
 		for (const auto &vecid : con_trans_id_)
 		{
@@ -1199,21 +1165,65 @@ public:
 		// 创建 ROOT 文件
 		TFile *rootFile = new TFile(filename.c_str(), "RECREATE");
 
-		auto plotconfig = config_parser_.getPlotConfigs();
+		TTree *legend = new TTree("legends", "Amplitude Legends");
+		legend->Branch("legend", &legends_);
+		legend->Fill();
+		legend->Write();
+		delete legend;
 
-		/*
-		struct PlotConfig
+		if (is_saved_weight == 1)
 		{
-			std::vector<std::vector<std::string>> particles;
-			std::vector<int> bins;
-			std::vector<std::vector<double>> ranges;
-			std::vector<std::string> display;
-			std::string type; // "mass", "cosbeta", "dalitz"
-		};
-		*/
+			TTree *phspTree = new TTree("saved_weight", "fitting result weights");
 
+			// std::map<std::string, TLorentzVector> phsp_vectors;
+			// for (const auto &particle : Vp4_phsp_)
+			// {
+			// 	phsp_vectors[particle.first] = TLorentzVector();
+			// 	phspTree->Branch(particle.first.c_str(), &phsp_vectors[particle.first]);
+			// }
+
+			// 添加权重分支
+			double total_weight;
+			std::vector<double> partial_weights(npartials);
+			phspTree->Branch("totalweight", &total_weight);
+
+			// 为每个部分波创建分支
+			for (int i = 0; i < npartials; ++i)
+			{
+				std::string branch_name = "weight_" + resonance_names_[i];
+				phspTree->Branch(branch_name.c_str(), &partial_weights[i]);
+			}
+
+			// 填充 phsp tree
+			for (int i = 0; i < n_events; ++i)
+			{
+				// // 设置四动量
+				// for (const auto &particle : Vp4_phsp_)
+				// {
+				// 	const auto &lv = particle.second[i];
+				// 	phsp_vectors[particle.first].SetPxPyPzE(lv.Px, lv.Py, lv.Pz, lv.E);
+				// }
+
+				// 设置权重
+				total_weight = h_total_results[i] / h_phsp_integral * static_cast<double>(dataIntegral);
+				// std::cout << "Event " << i << ": Total Weight = " << total_weight << std::endl;
+				for (int j = 0; j < npartials; ++j)
+				{
+					partial_weights[j] = h_partial_results[i * npartials + j] * static_cast<double>(dataIntegral) / h_phsp_integral;
+					// std::cout << "  Partial Weight " << j << " = " << partial_weights[j] << std::endl;
+				}
+
+				phspTree->Fill();
+			}
+
+			phspTree->Write();
+			delete phspTree;
+		}
+
+		auto plotconfig = config_parser_.getPlotConfigs();
 		std::vector<MassHistConfig> masshist;
-
+		std::vector<AngleHistConfig> anglehist;
+		std::vector<DalitzHistConfig> dalitzhist;
 		for (const auto &histConfig : plotconfig)
 		{
 			// 输出histConfig内容以进行调试
@@ -1231,98 +1241,240 @@ public:
 					hist_name += p;
 				}
 				std::cout << "Creating mass histogram: " << hist_name << std::endl;
-				std::cout << "  Particles: ";
-				for (const auto &p : particles)
-				{
-					std::cout << p << " ";
-				}
-				std::cout << std::endl;
-				std::cout << "  Bins: " << bins << std::endl;
-				std::cout << "  Range: [" << range[0] << ", " << range[1] << "]" << std::endl;
-				std::cout << "  Display: ";
-				for (const auto &d : display)
-				{
-					std::cout << d << " ";
-				}
-				std::cout << std::endl;
-
 				masshist.emplace_back(hist_name, "", particles, bins, range, display);
 			}
+			else if (histConfig.type == "cosbeta")
+			{
+				// 处理角度直方图配置
+				std::vector<std::vector<std::string>> particles = histConfig.particles;
+				int bins = histConfig.bins[0];
+				std::vector<double> range = histConfig.ranges[0];
+				std::vector<std::string> display = histConfig.display;
+				std::string hist_name = "cosbeta";
+				for (const auto &pvec : particles)
+				{
+					hist_name += "_";
+					for (const auto &p : pvec)
+					{
+						hist_name += p;
+					}
+				}
+				std::cout << "Creating angle histogram: " << hist_name << std::endl;
+				anglehist.emplace_back(hist_name, "", particles, bins, range, display);
+			}
+			else if (histConfig.type == "dalitz")
+			{
+				std::vector<std::vector<std::string>> particles = histConfig.particles;
+				std::vector<int> bins = histConfig.bins;
+				std::vector<std::vector<double>> ranges = histConfig.ranges;
+				std::vector<std::string> display = histConfig.display;
+				std::string hist_name = "dalitz";
+				for (const auto &pvec : particles)
+				{
+					hist_name += "_";
+					for (const auto &p : pvec)
+					{
+						hist_name += p;
+					}
+				}
+				std::cout << "Creating dalitz histogram: " << hist_name << std::endl;
+				dalitzhist.emplace_back(hist_name, "", particles, bins, ranges, display);
+			}
 		}
-		// masshist.emplace_back("mass_KpKm", "", std::vector<std::string>{"Kp", "Km"}, 100, std::vector<double>{1.0, 2.6}, std::vector<std::string>{"M(K^{+}K^{-}) (GeV/c^{2})"});
-		// masshist.emplace_back("mass_Kpeta", "", std::vector<std::string>{"Kp", "eta"}, 100, std::vector<double>{1.0, 2.6}, std::vector<std::string>{"M(K^{+}eta) (GeV/c^{2})"});
+
+		for (const auto &histConfig : masshist)
+		{
+			TDirectory *histDir = rootFile->mkdir(histConfig.name.c_str());
+			histDir->cd();
+
+			TObjString xlabel_obj(histConfig.tex[0].c_str());
+			TObjString ylabel_obj(histConfig.tex[1].c_str());
+			xlabel_obj.Write("xlabel");
+			ylabel_obj.Write("ylabel");
+		}
+
+		for (const auto &histConfig : anglehist)
+		{
+			TDirectory *histDir = rootFile->mkdir(histConfig.name.c_str());
+			histDir->cd();
+
+			TObjString xlabel_obj(histConfig.tex[0].c_str());
+			TObjString ylabel_obj(histConfig.tex[1].c_str());
+			xlabel_obj.Write("xlabel");
+			ylabel_obj.Write("ylabel");
+		}
+
+		for (const auto &histConfig : dalitzhist)
+		{
+			TDirectory *histDir = rootFile->mkdir(histConfig.name.c_str());
+			histDir->cd();
+
+			TObjString xlabel_obj(histConfig.tex[0].c_str());
+			TObjString ylabel_obj(histConfig.tex[1].c_str());
+			xlabel_obj.Write("xlabel");
+			ylabel_obj.Write("ylabel");
+		}
 
 		// 计算并保存data直方图
 		if (!Vp4_data_.empty())
 		{
-
-			std::vector<TH1F *> hist_data;
-
+			std::vector<TH1F *> masshist_data;
 			for (const auto &histConfig : masshist)
 			{
 				TH1F *hist = new TH1F(histConfig.name.c_str(), histConfig.title.c_str(), histConfig.bins, histConfig.range[0], histConfig.range[1]);
-				hist_data.emplace_back(hist);
+				masshist_data.emplace_back(hist);
 			}
 
-			CalculateMassHist(Vp4_data_, masshist, nullptr, hist_data);
-
+			CalculateMassHist(Vp4_data_, masshist, nullptr, masshist_data);
 			for (size_t i = 0; i < masshist.size(); ++i)
 			{
-				TDirectory *histDir = rootFile->mkdir(masshist[i].name.c_str());
+				TDirectory *histDir = rootFile->GetDirectory(masshist[i].name.c_str());
 				histDir->cd();
-				hist_data[i]->Write("hdata");
+				masshist_data[i]->Write("hdata");
+				delete masshist_data[i];
+			}
 
-				TObjString xlabel_obj(masshist[i].tex[0].c_str());
-				TObjString ylabel_obj(masshist[i].tex[1].c_str());
-				xlabel_obj.Write("xlabel");
-				ylabel_obj.Write("ylabel");
-				delete hist_data[i];
+			std::vector<TH1F *> anglehist_data;
+			for (const auto &histConfig : anglehist)
+			{
+				TH1F *hist = new TH1F(histConfig.name.c_str(), histConfig.title.c_str(), histConfig.bins, histConfig.range[0], histConfig.range[1]);
+				anglehist_data.emplace_back(hist);
+			}
+			CalculateAngleHist(Vp4_data_, anglehist, nullptr, anglehist_data);
+			for (size_t i = 0; i < anglehist.size(); ++i)
+			{
+				TDirectory *histDir = rootFile->GetDirectory(anglehist[i].name.c_str());
+				histDir->cd();
+				anglehist_data[i]->Write("hdata");
+				delete anglehist_data[i];
+			}
+
+			std::vector<TH2F *> dalitzhist_data;
+			for (const auto &histConfig : dalitzhist)
+			{
+				TH2F *hist = new TH2F(histConfig.name.c_str(), histConfig.title.c_str(),
+									  histConfig.bins[0], histConfig.range[0][0], histConfig.range[0][1],
+									  histConfig.bins[1], histConfig.range[1][0], histConfig.range[1][1]);
+				dalitzhist_data.emplace_back(hist);
+			}
+			CalculateDalitzHist(Vp4_data_, dalitzhist, nullptr, dalitzhist_data);
+			for (size_t i = 0; i < dalitzhist.size(); ++i)
+			{
+				TDirectory *histDir = rootFile->GetDirectory(dalitzhist[i].name.c_str());
+				histDir->cd();
+				dalitzhist_data[i]->Write("hdata");
+				delete dalitzhist_data[i];
 			}
 		}
 
 		// 计算并保存拟合结果直方图
 		if (!Vp4_phsp_.empty())
 		{
-
-			std::vector<TH1F *> hist_fit;
-
+			std::vector<TH1F *> masshist_fit;
 			for (const auto &histConfig : masshist)
 			{
 				TH1F *hist = new TH1F(histConfig.name.c_str(), histConfig.title.c_str(), histConfig.bins, histConfig.range[0], histConfig.range[1]);
-				hist_fit.emplace_back(hist);
+				masshist_fit.emplace_back(hist);
 			}
 
-			CalculateMassHist(Vp4_phsp_, masshist, h_total_results, hist_fit);
-
+			CalculateMassHist(Vp4_phsp_, masshist, h_total_results, masshist_fit);
 			for (size_t i = 0; i < masshist.size(); ++i)
 			{
 				TDirectory *histDir = rootFile->GetDirectory(masshist[i].name.c_str());
 				histDir->cd();
-				hist_fit[i]->Write("hfit");
-				delete hist_fit[i];
+
+				TH1F *hist = masshist_fit[i];
+				hist->Scale(normFactor);
+				hist->Write("hfit");
+				delete masshist_fit[i];
+			}
+
+			std::vector<TH1F *> anglehist_fit;
+			for (const auto &histConfig : anglehist)
+			{
+				TH1F *hist = new TH1F(histConfig.name.c_str(), histConfig.title.c_str(), histConfig.bins, histConfig.range[0], histConfig.range[1]);
+				anglehist_fit.emplace_back(hist);
+			}
+			CalculateAngleHist(Vp4_phsp_, anglehist, h_total_results, anglehist_fit);
+			for (size_t i = 0; i < anglehist.size(); ++i)
+			{
+				TDirectory *histDir = rootFile->GetDirectory(anglehist[i].name.c_str());
+				histDir->cd();
+				TH1F *hist = anglehist_fit[i];
+				hist->Scale(normFactor);
+				hist->Write("hfit");
+				delete anglehist_fit[i];
+			}
+
+			std::vector<TH2F *> dalitzhist_fit;
+			for (const auto &histConfig : dalitzhist)
+			{
+				TH2F *hist = new TH2F(histConfig.name.c_str(), histConfig.title.c_str(),
+									  histConfig.bins[0], histConfig.range[0][0], histConfig.range[0][1],
+									  histConfig.bins[1], histConfig.range[1][0], histConfig.range[1][1]);
+				dalitzhist_fit.emplace_back(hist);
+			}
+			CalculateDalitzHist(Vp4_phsp_, dalitzhist, h_total_results, dalitzhist_fit);
+			for (size_t i = 0; i < dalitzhist.size(); ++i)
+			{
+				TDirectory *histDir = rootFile->GetDirectory(dalitzhist[i].name.c_str());
+				histDir->cd();
+				TH2F *hist = dalitzhist_fit[i];
+				hist->Scale(normFactor);
+				hist->Write("hfit");
+				delete dalitzhist_fit[i];
 			}
 		}
 
 		// 计算并保存本底直方图
 		if (!Vp4_bkg_.empty())
 		{
-
-			std::vector<TH1F *> hist_bkg;
-
+			std::vector<TH1F *> masshist_bkg;
 			for (const auto &histConfig : masshist)
 			{
 				TH1F *hist = new TH1F(histConfig.name.c_str(), histConfig.title.c_str(), histConfig.bins, histConfig.range[0], histConfig.range[1]);
-				hist_bkg.emplace_back(hist);
+				masshist_bkg.emplace_back(hist);
 			}
 
-			CalculateMassHist(Vp4_bkg_, masshist, nullptr, hist_bkg);
-
+			CalculateMassHist(Vp4_bkg_, masshist, nullptr, masshist_bkg);
 			for (size_t i = 0; i < masshist.size(); ++i)
 			{
 				TDirectory *histDir = rootFile->GetDirectory(masshist[i].name.c_str());
 				histDir->cd();
-				hist_bkg[i]->Write("hbkg");
-				delete hist_bkg[i];
+				masshist_bkg[i]->Write("hbkg");
+				delete masshist_bkg[i];
+			}
+
+			std::vector<TH1F *> anglehist_bkg;
+			for (const auto &histConfig : anglehist)
+			{
+				TH1F *hist = new TH1F(histConfig.name.c_str(), histConfig.title.c_str(), histConfig.bins, histConfig.range[0], histConfig.range[1]);
+				anglehist_bkg.emplace_back(hist);
+			}
+			CalculateAngleHist(Vp4_bkg_, anglehist, nullptr, anglehist_bkg);
+			for (size_t i = 0; i < anglehist.size(); ++i)
+			{
+				TDirectory *histDir = rootFile->GetDirectory(anglehist[i].name.c_str());
+				histDir->cd();
+				anglehist_bkg[i]->Write("hbkg");
+				delete anglehist_bkg[i];
+			}
+
+			std::vector<TH2F *> dalitzhist_bkg;
+			for (const auto &histConfig : dalitzhist)
+			{
+				TH2F *hist = new TH2F(histConfig.name.c_str(), histConfig.title.c_str(),
+									  histConfig.bins[0], histConfig.range[0][0], histConfig.range[0][1],
+									  histConfig.bins[1], histConfig.range[1][0], histConfig.range[1][1]);
+				dalitzhist_bkg.emplace_back(hist);
+			}
+			CalculateDalitzHist(Vp4_bkg_, dalitzhist, nullptr, dalitzhist_bkg);
+			for (size_t i = 0; i < dalitzhist.size(); ++i)
+			{
+				TDirectory *histDir = rootFile->GetDirectory(dalitzhist[i].name.c_str());
+				histDir->cd();
+				dalitzhist_bkg[i]->Write("hbkg");
+				delete dalitzhist_bkg[i];
 			}
 		}
 
@@ -1332,122 +1484,54 @@ public:
 			for (int i = 0; i < npartials; ++i)
 			{
 				// 为当前部分创建直方图
-				std::vector<TH1F *> partialHists;
-
-				// 为每个配置创建直方图
+				// std::vector<TH1F *> partialHists;
+				std::vector<TH1F *> masshist_partial;
 				for (const auto &histConfig : masshist)
 				{
 					TH1F *hist = new TH1F(histConfig.name.c_str(), histConfig.title.c_str(), histConfig.bins, histConfig.range[0], histConfig.range[1]);
-					partialHists.push_back(hist);
+					masshist_partial.push_back(hist);
 				}
 
-				// 计算直方图，传入数据和输出直方图
-				CalculateMassHist(Vp4_phsp_, masshist, &h_partial_results[i * n_events], partialHists);
-
-				// 写入文件并清理
-				for (size_t j = 0; j < partialHists.size(); ++j)
+				CalculateMassHist(Vp4_phsp_, masshist, &h_partial_results[i * n_events], masshist_partial);
+				for (size_t j = 0; j < masshist_partial.size(); ++j)
 				{
 
 					TDirectory *histDir = rootFile->GetDirectory(masshist[j].name.c_str());
 					histDir->cd();
 
-					std::string partial_dir_name = "h_" + amplitude_names_[i];
+					// std::string partial_dir_name = "h_" + amplitude_names_[i];
+					std::string partial_dir_name = "h_" + resonance_names_[i];
 
-					TH1F *hist = partialHists[j];
+					TH1F *hist = masshist_partial[j];
 					hist->Scale(normFactor);
 					hist->Write(partial_dir_name.c_str());
 
 					delete hist;
 				}
+				masshist_partial.clear();
 
-				// 清空向量
-				partialHists.clear();
+				std::vector<TH1F *> anglehist_partial;
+				for (const auto &histConfig : anglehist)
+				{
+					TH1F *hist = new TH1F(histConfig.name.c_str(), histConfig.title.c_str(), histConfig.bins, histConfig.range[0], histConfig.range[1]);
+					anglehist_partial.push_back(hist);
+				}
+				CalculateAngleHist(Vp4_phsp_, anglehist, &h_partial_results[i * n_events], anglehist_partial);
+				for (size_t j = 0; j < anglehist_partial.size(); ++j)
+				{
+					TDirectory *histDir = rootFile->GetDirectory(anglehist[j].name.c_str());
+					histDir->cd();
+
+					std::string partial_dir_name = "h_" + resonance_names_[i];
+
+					TH1F *hist = anglehist_partial[j];
+					hist->Scale(normFactor);
+					hist->Write(partial_dir_name.c_str());
+					delete anglehist_partial[j];
+				}
+				anglehist_partial.clear();
 			}
 		}
-
-		// if (!Vp4_phsp_.empty())
-		// {
-		// 	std::vector<HistogramConfig> histConfigs_fit;
-		// 	for (const auto &histConfig : histConfigs)
-		// 	{
-		// 		histConfigs_fit.emplace_back(histConfig.name, histConfig.title, histConfig.particles, histConfig.bins, histConfig.range);
-		// 	}
-
-		// 	CalculateHist(Vp4_phsp_, histConfigs_fit, h_total_results);
-
-		// 	for (const auto &histConfig : histConfigs_fit)
-		// 	{
-		// 		TDirectory *histDir = rootFile->GetDirectory(histConfig.name.c_str());
-		// 		// if (!histDir)
-		// 		// {
-		// 		// 	histDir = rootFile->mkdir(histConfig.name.c_str());
-		// 		// }
-		// 		histDir->cd();
-		// 		// if (histConfig.hist)
-		// 		// {
-		// 		histConfig.hist->Scale(normFactor);
-		// 		histConfig.hist->Write("hfit");
-		// 		// }
-		// 	}
-		// }
-
-		// if (!Vp4_phsp_.empty())
-		// {
-		// 	for (int i = 0; i < npartials; ++i)
-		// 	{
-
-		// 		std::vector<HistogramConfig> histConfigs_partial;
-
-		// 		for (const auto &histConfig : histConfigs)
-		// 		{
-		// 			histConfigs_partial.emplace_back(histConfig.name, histConfig.title, histConfig.particles, histConfig.bins, histConfig.range);
-		// 		}
-
-		// 		CalculateHist(Vp4_phsp_, histConfigs_partial, &h_partial_results[i * n_events]);
-
-		// 		for (const auto &histConfig : histConfigs_partial)
-		// 		{
-		// 			TDirectory *histDir = rootFile->GetDirectory(histConfig.name.c_str());
-
-		// 			std::cout << histConfig.name << std::endl;
-
-		// 			std::string partial_dir_name = "h_" + amplitude_names_[i];
-		// 			histConfig.hist->Scale(normFactor);
-		// 			histConfig.hist->Write(partial_dir_name.c_str());
-		// 		}
-		// 	}
-		// }
-
-		// if (!Vp4_bkg_.empty())
-		// {
-
-		// 	std::vector<HistogramConfig> histConfigs_bkg;
-
-		// 	for (const auto &histConfig : histConfigs)
-		// 	{
-		// 		histConfigs_bkg.emplace_back(histConfig.name, histConfig.title, histConfig.particles, histConfig.bins, histConfig.range);
-		// 	}
-
-		// 	CalculateHist(Vp4_bkg_, histConfigs_bkg, nullptr);
-
-		// 	for (const auto &histConfig : histConfigs_bkg)
-		// 	{
-		// 		TDirectory *histDir = rootFile->GetDirectory(histConfig.name.c_str());
-		// 		// if (!histDir)
-		// 		// {
-		// 		// TDirectory *histDir = rootFile->mkdir(histConfig.name.c_str());
-		// 		// }
-		// 		histDir->cd();
-		// 		// histConfig.hist->Scale(normFactor);
-		// 		histConfig.hist->Write("hbkg");
-		// 	}
-		// }
-
-		// TTree *legend = new TTree("legends", "Amplitude Legends");
-		// legend->Branch("legend", &legends_);
-		// legend->Fill();
-		// legend->Write();
-		// delete legend;
 
 		// 关闭 ROOT 文件
 		rootFile->Close();
@@ -1537,6 +1621,7 @@ private:
 
 	// amplitude 信息
 	std::vector<std::string> amplitude_names_;
+	std::vector<std::string> resonance_names_;
 	std::vector<std::string> legends_;
 
 	// 约束信息
@@ -1849,6 +1934,7 @@ private:
 						}
 						amplitude_names_.push_back(full_name);
 					}
+					resonance_names_.push_back(res_name);
 				}
 				std::cout << std::endl;
 			}

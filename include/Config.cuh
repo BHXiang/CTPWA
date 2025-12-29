@@ -13,7 +13,7 @@ struct Particle
     int spin;
     int parity;
     double mass;
-    std::string tex;
+    std::vector<std::string> tex;
 };
 
 struct ResonanceConfig
@@ -23,7 +23,7 @@ struct ResonanceConfig
     int P;
     std::string type;
     std::vector<double> parameters;
-    std::string tex;
+    std::vector<std::string> tex;
 };
 
 struct SpinChainConfig
