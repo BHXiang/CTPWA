@@ -37,11 +37,12 @@
 //     cuComplex *d_grad); //, cublasHandle_t cublas_handle);
 
 void compute_gradient(
-    const cuComplex *d_D, // [K, A, B]
-    const cuComplex *d_P, // [K, N]
-    const cuComplex *d_S, // [A, B]
-    const double *d_U,    // [A]
-    const cuComplex *d_Q, // [N]
+    const cuComplex *d_D,    // [K, A, B]
+    const cuComplex *d_P,    // [K, N]
+    const cuComplex *d_S,    // [A, B]
+    const double *d_Q,       // [A]
+    const cuComplex *d_B,    // [N]
+    const double *d_weights, // [A]，新增：权重数组
     double phsp_factor,
     int K, int A, int B, int N,
     cuComplex *d_grad, // [K]

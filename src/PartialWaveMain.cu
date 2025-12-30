@@ -124,414 +124,36 @@ std::map<std::string, std::vector<LorentzVector>> readMomentaFromDat(
 	return finalMomenta;
 }
 
-// class NLLFunction : public torch::autograd::Function<NLLFunction>
-// {
-// public:
-// 	static torch::Tensor forward(torch::autograd::AutogradContext *ctx, torch::Tensor &vector, int n_gls_, int n_polar_, const cuComplex *data_fix_, int data_length, const cuComplex *phsp_fix_, int phsp_length, const cuComplex *bkg_fix_, int bkg_length, std::vector<std::vector<int>> con_trans_id, std::vector<std::vector<std::complex<double>>> con_trans_values)
-// 	{
-// 		TORCH_CHECK(vector.is_cuda(), "[NLLForward] vector must be on CUDA");
-// 		TORCH_CHECK(vector.dtype() == c10::kComplexFloat, "[NLLForward] vector must be complex64");
-
-// 		// 获取当前设备并设置
-// 		const int target_dev = vector.get_device();
-// 		torch::Device dev(torch::kCUDA, target_dev);
-
-// 		// 延长vector以处理约束
-// 		torch::Tensor extended_vector = extendVectorWithConstraints(vector, con_trans_id, con_trans_values, dev);
-// 		const int extended_n_gls = extended_vector.numel();
-
-// 		// 后续逻辑（MC因子计算等）
-// 		cuComplex *d_B = nullptr;
-// 		double *d_mc_amp = nullptr;
-// 		cudaMalloc(&d_B, phsp_length * sizeof(cuComplex));
-// 		cudaMalloc(&d_mc_amp, sizeof(double));
-
-// 		// computeSingleResult(phsp_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_B, d_mc_amp, phsp_length, extended_n_gls);
-// 		computePHSPfactor(phsp_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_B, d_mc_amp, phsp_length, extended_n_gls);
-
-// 		double h_phsp_factor;
-// 		cudaMemcpy(&h_phsp_factor, d_mc_amp, sizeof(double), cudaMemcpyDeviceToHost);
-// 		h_phsp_factor = h_phsp_factor / static_cast<double>(phsp_length / n_polar_);
-
-// 		// NLL计算
-// 		cuComplex *d_S = nullptr;
-// 		cuComplex *d_Q = nullptr;
-// 		double *d_data_nll = nullptr;
-// 		const int Q_numel = data_length / n_polar_;
-// 		cudaMalloc(&d_S, data_length * sizeof(cuComplex));
-// 		cudaMalloc(&d_Q, Q_numel * sizeof(cuComplex));
-// 		cudaMalloc(&d_data_nll, sizeof(double));
-
-// 		computeNll(data_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_S, d_Q, d_data_nll, data_length, extended_n_gls, n_polar_, h_phsp_factor);
-
-// 		double h_data_nll;
-// 		cudaMemcpy(&h_data_nll, d_data_nll, sizeof(double), cudaMemcpyDeviceToHost);
-
-// 		// bkg部分
-// 		cuComplex *d_bkg_S = nullptr;
-// 		cuComplex *d_bkg_Q = nullptr;
-// 		double *d_bkg_nll = nullptr;
-// 		const int bkg_Q_numel = bkg_length / n_polar_;
-// 		cudaMalloc(&d_bkg_S, bkg_length * sizeof(cuComplex));
-// 		cudaMalloc(&d_bkg_Q, bkg_Q_numel * sizeof(cuComplex));
-// 		cudaMalloc(&d_bkg_nll, sizeof(double));
-// 		double h_bkg_nll = 0.0;
-// 		if (bkg_fix_ != nullptr && bkg_length > 0)
-// 		{
-// 			computeNll(bkg_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_bkg_S, d_bkg_Q, d_bkg_nll, bkg_length, extended_n_gls, n_polar_, h_phsp_factor);
-
-// 			cudaMemcpy(&h_bkg_nll, d_bkg_nll, sizeof(double), cudaMemcpyDeviceToHost);
-// 		}
-
-// 		// 保存反向传播变量
-// 		ctx->saved_data["target_dev"] = target_dev;
-// 		ctx->saved_data["n_polar"] = n_polar_;
-// 		ctx->saved_data["h_phsp_factor"] = h_phsp_factor * static_cast<double>(phsp_length / n_polar_);
-// 		ctx->saved_data["n_gls"] = n_gls_;
-// 		ctx->saved_data["extended_n_gls"] = extended_n_gls;
-// 		ctx->saved_data["data_length"] = data_length;
-// 		ctx->saved_data["phsp_length"] = phsp_length;
-// 		ctx->saved_data["bkg_length"] = bkg_length;
-
-// 		// 保存共轭对信息
-// 		torch::Tensor conjugate_pairs_tensor = torch::empty({static_cast<int64_t>(conjugate_pairs_.size()), 2}, torch::kInt32);
-// 		auto conjugate_pairs_accessor = conjugate_pairs_tensor.accessor<int, 2>();
-// 		for (size_t i = 0; i < conjugate_pairs_.size(); ++i)
-// 		{
-// 			conjugate_pairs_accessor[i][0] = conjugate_pairs_[i].first;
-// 			conjugate_pairs_accessor[i][1] = conjugate_pairs_[i].second;
-// 		}
-// 		ctx->saved_data["conjugate_pairs"] = conjugate_pairs_tensor;
-
-// 		// 保存显存指针
-// 		ctx->saved_data["data_fix_ptr"] = reinterpret_cast<int64_t>(data_fix_);
-// 		ctx->saved_data["phsp_fix_ptr"] = reinterpret_cast<int64_t>(phsp_fix_);
-// 		ctx->saved_data["bkg_fix_ptr"] = reinterpret_cast<int64_t>(bkg_fix_);
-// 		ctx->saved_data["d_B_ptr"] = reinterpret_cast<int64_t>(d_B);
-// 		ctx->saved_data["d_S_ptr"] = reinterpret_cast<int64_t>(d_S);
-// 		ctx->saved_data["d_Q_ptr"] = reinterpret_cast<int64_t>(d_Q);
-// 		ctx->saved_data["d_bkg_S_ptr"] = reinterpret_cast<int64_t>(d_bkg_S);
-// 		ctx->saved_data["d_bkg_Q_ptr"] = reinterpret_cast<int64_t>(d_bkg_Q);
-// 		ctx->saved_data["d_bkg_nll_ptr"] = reinterpret_cast<int64_t>(d_bkg_nll);
-
-// 		ctx->save_for_backward({vector, extended_vector});
-
-// 		// 释放临时内存
-// 		cudaFree(d_mc_amp);
-
-// 		return torch::tensor({h_data_nll - h_bkg_nll}, torch::kDouble).to(dev);
-// 	}
-
-// 	static torch::autograd::tensor_list backward(torch::autograd::AutogradContext *ctx, const torch::autograd::tensor_list &grad_outputs)
-// 	{
-// 		const int target_dev = ctx->saved_data["target_dev"].toInt();
-
-// 		// std::cout << "debug: " << __LINE__ << std::endl;
-
-// 		// 从 saved_data 获取参数
-// 		const int n_polar = ctx->saved_data["n_polar"].toInt();
-// 		const double h_phsp_factor = ctx->saved_data["h_phsp_factor"].toDouble();
-// 		const int n_gls = ctx->saved_data["n_gls"].toInt();
-// 		const int extended_n_gls = ctx->saved_data["extended_n_gls"].toInt();
-// 		const int data_length = ctx->saved_data["data_length"].toInt();
-// 		const int phsp_length = ctx->saved_data["phsp_length"].toInt();
-// 		const int bkg_length = ctx->saved_data["bkg_length"].toInt();
-
-// 		// // 获取共轭对信息
-// 		auto conjugate_pairs_tensor = ctx->saved_data["conjugate_pairs"].toTensor();
-// 		std::vector<std::pair<int, int>> conjugate_pairs;
-// 		auto conjugate_pairs_accessor = conjugate_pairs_tensor.accessor<int, 2>();
-// 		for (int64_t i = 0; i < conjugate_pairs_tensor.size(0); ++i)
-// 		{
-// 			conjugate_pairs.push_back({conjugate_pairs_accessor[i][0], conjugate_pairs_accessor[i][1]});
-// 		}
-
-// 		// 从 saved_data 获取显存指针
-// 		cuComplex *d_B = reinterpret_cast<cuComplex *>(ctx->saved_data["d_B_ptr"].toInt());
-// 		cuComplex *data_fix = reinterpret_cast<cuComplex *>(ctx->saved_data["data_fix_ptr"].toInt());
-// 		cuComplex *phsp_fix = reinterpret_cast<cuComplex *>(ctx->saved_data["phsp_fix_ptr"].toInt());
-// 		cuComplex *d_S = reinterpret_cast<cuComplex *>(ctx->saved_data["d_S_ptr"].toInt());
-// 		cuComplex *d_Q = reinterpret_cast<cuComplex *>(ctx->saved_data["d_Q_ptr"].toInt());
-
-// 		// // 获取背景数据的指针（如果存在）
-// 		// if (bkg_length > 0)
-// 		// {
-// 		cuComplex *bkg_fix = reinterpret_cast<cuComplex *>(ctx->saved_data["bkg_fix_ptr"].toInt());
-// 		cuComplex *d_bkg_S = reinterpret_cast<cuComplex *>(ctx->saved_data["d_bkg_S_ptr"].toInt());
-// 		cuComplex *d_bkg_Q = reinterpret_cast<cuComplex *>(ctx->saved_data["d_bkg_Q_ptr"].toInt());
-// 		// }
-
-// 		// 获取保存的变量
-// 		const auto saved = ctx->get_saved_variables();
-// 		const auto &original_vector = saved[0];
-// 		const auto &extended_vector = saved[1];
-
-// 		// 计算扩展向量的梯度
-// 		cuComplex *d_extended_grad = nullptr;
-// 		cudaMalloc(&d_extended_grad, extended_n_gls * sizeof(cuComplex));
-
-// 		cublasHandle_t cublas_handle;
-// 		cublasCreate(&cublas_handle);
-// 		compute_gradient(data_fix, phsp_fix, d_S, d_Q, d_B, h_phsp_factor, extended_n_gls, data_length / n_polar, n_polar, phsp_length, d_extended_grad, cublas_handle);
-
-// 		// 如果有背景数据，减去背景NLL的梯度
-// 		if (bkg_fix != nullptr && bkg_length > 0)
-// 		{
-// 			cuComplex *d_bkg_extended_grad = nullptr;
-// 			cudaMalloc(&d_bkg_extended_grad, extended_n_gls * sizeof(cuComplex));
-
-// 			// 初始化背景梯度为0
-// 			cudaMemset(d_bkg_extended_grad, 0, extended_n_gls * sizeof(cuComplex));
-
-// 			// 计算背景NLL的梯度
-// 			compute_gradient(bkg_fix, phsp_fix, d_bkg_S, d_bkg_Q, d_B, h_phsp_factor,
-// 							 extended_n_gls, bkg_length / n_polar, n_polar,
-// 							 phsp_length, d_bkg_extended_grad, cublas_handle);
-
-// 			// 从数据梯度中减去背景梯度：∇L = ∇(data_nll) - ∇(bkg_nll)
-// 			// 使用cublas的向量减法操作
-// 			const cuComplex minus_one = make_cuComplex(-1.0f, 0.0f);
-// 			cublasCaxpy(cublas_handle, extended_n_gls,
-// 						&minus_one, d_bkg_extended_grad, 1,
-// 						d_extended_grad, 1);
-
-// 			cudaFree(d_bkg_extended_grad);
-// 			cudaFree(d_bkg_S);
-// 			cudaFree(d_bkg_Q);
-// 		}
-
-// 		// 		// 输出d_extended_grad以供调试
-// 		// torch::Tensor debug_extended_grad = torch::empty({extended_n_gls}, torch::kComplexFloat).to(original_vector.device());
-// 		// cudaMemcpy(debug_extended_grad.data_ptr(), d_extended_grad,
-// 		// 		   extended_n_gls * sizeof(cuComplex),
-// 		// 		   cudaMemcpyDeviceToDevice);
-// 		// std::cout << "Debug extended_grad: " << debug_extended_grad << std::endl;
-
-// 		// 将扩展梯度的共轭部分合并回原始梯度
-// 		torch::Tensor extended_grad = torch::empty({extended_n_gls}, torch::kComplexFloat).to(original_vector.device());
-// 		cudaMemcpy(extended_grad.data_ptr(), d_extended_grad,
-// 				   extended_n_gls * sizeof(cuComplex),
-// 				   cudaMemcpyDeviceToDevice);
-
-// 		torch::Tensor grad_vector = mergeGradientsWithConjugates(extended_grad, conjugate_pairs, original_vector.numel());
-
-// 		// 清理内存
-// 		cudaFree(d_extended_grad);
-// 		cudaFree(d_B);
-// 		cudaFree(d_S);
-// 		cudaFree(d_Q);
-// 		cublasDestroy(cublas_handle);
-
-// 		return {grad_vector, torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor()};
-// 	}
-
-// private:
-// 	static torch::Tensor extendVectorWithConstraints(const torch::Tensor &vector,
-// 													 const std::vector<std::vector<int>> &con_trans_id,
-// 													 const std::vector<std::vector<std::complex<double>>> &con_trans_values,
-// 													 const torch::Device &device)
-// 	{
-// 		TORCH_CHECK(vector.is_complex(), "Input vector must be complex type");
-// 		TORCH_CHECK(vector.dim() == 1, "Input vector must be 1-dimensional");
-
-// 		const int original_size = vector.numel();
-// 		int extended_size = original_size;
-
-// 		// 找到最大ID以确定扩展大小
-// 		for (const auto &vecid : con_trans_id)
-// 		{
-// 			if (!vecid.empty())
-// 			{
-// 				auto max_it = std::max_element(vecid.begin(), vecid.end());
-// 				extended_size = std::max(extended_size, *max_it + 1);
-// 			}
-// 		}
-
-// 		if (extended_size == original_size)
-// 		{
-// 			return vector.clone();
-// 		}
-
-// 		// 创建扩展后的向量
-// 		torch::TensorOptions options = torch::TensorOptions()
-// 										   .dtype(torch::kComplexFloat)
-// 										   .device(device);
-
-// 		torch::Tensor extended_vector = torch::zeros({extended_size}, options);
-
-// 		// 使用访问器进行更高效的操作
-// 		auto extended_accessor = extended_vector.accessor<std::complex<float>, 1>();
-// 		auto vector_accessor = vector.accessor<std::complex<float>, 1>();
-
-// 		// 复制原始向量到扩展向量
-// 		for (int i = 0; i < original_size; ++i)
-// 		{
-// 			extended_accessor[i] = vector_accessor[i];
-// 		}
-
-// 		// 设置约束
-// 		for (size_t i = 0; i < con_trans_id.size(); ++i)
-// 		{
-// 			const auto &vecid = con_trans_id[i];
-// 			const auto &values = con_trans_values[i];
-
-// 			if (vecid.empty() || values.empty() || vecid.size() != values.size())
-// 			{
-// 				continue;
-// 			}
-
-// 			// 找到原始ID（最小值）
-// 			auto min_it = std::min_element(vecid.begin(), vecid.end());
-// 			int origin_idx = std::distance(vecid.begin(), min_it);
-// 			int origin_id = vecid[origin_idx];
-
-// 			// 确保原始ID有效
-// 			if (origin_id < 0 || origin_id >= original_size)
-// 			{
-// 				continue;
-// 			}
-
-// 			// 获取原始值
-// 			std::complex<float> origin_value = extended_accessor[origin_id];
-// 			float origin_real = std::real(origin_value);
-// 			float origin_imag = std::imag(origin_value);
-
-// 			// 获取原始ID对应的系数
-// 			std::complex<double> origin_coeff = values[origin_idx];
-// 			double origin_coeff_real = std::real(origin_coeff);
-// 			double origin_coeff_imag = std::imag(origin_coeff);
-
-// 			// 检查分母不为零
-// 			if (std::abs(origin_coeff_real) < 1e-10 || std::abs(origin_coeff_imag) < 1e-10)
-// 			{
-// 				std::cerr << "Warning: origin coefficient too small, skipping constraint group " << i << std::endl;
-// 				continue;
-// 			}
-
-// 			// 为每个扩展ID设置值
-// 			for (size_t j = 0; j < vecid.size(); ++j)
-// 			{
-// 				if (j == origin_idx)
-// 					continue; // 跳过原始ID
-
-// 				int extended_id = vecid[j];
-
-// 				// 确保扩展ID有效且不超过values数组的大小
-// 				if (extended_id >= 0 && extended_id < extended_size && j < values.size())
-// 				{
-// 					std::complex<double> ext_coeff = values[j];
-// 					double ext_coeff_real = std::real(ext_coeff);
-// 					double ext_coeff_imag = std::imag(ext_coeff);
-
-// 					// 计算扩展值：使用相对系数
-// 					float extended_real = static_cast<float>(ext_coeff_real / origin_coeff_real) * origin_real;
-// 					float extended_imag = static_cast<float>(ext_coeff_imag / origin_coeff_imag) * origin_imag;
-
-// 					// 直接赋值
-// 					extended_accessor[extended_id] = std::complex<float>(extended_real, extended_imag);
-// 				}
-// 			}
-// 		}
-
-// 		return extended_vector;
-// 	}
-
-// 	static torch::Tensor mergeGradientsWithConstraints(const torch::Tensor &extended_grad,
-// 													   const std::vector<std::pair<int, int>> &conjugate_pairs,
-// 													   int original_size)
-// 	{
-// 		torch::Tensor grad_vector = torch::zeros({original_size}, torch::kComplexFloat).to(extended_grad.device());
-
-// 		// 复制直接梯度
-// 		grad_vector = extended_grad.slice(0, 0, original_size);
-
-// 		// 合并共轭对的梯度
-// 		for (const auto &pair : conjugate_pairs)
-// 		{
-// 			int source_idx = pair.first;
-// 			int conjugate_idx = pair.second;
-
-// 			if (source_idx < original_size && conjugate_idx < extended_grad.numel())
-// 			{
-// 				// 对于共轭关系：y = conj(x)，梯度关系：dy/dx = conj(dL/dy)
-// 				torch::Tensor conjugate_grad = extended_grad[conjugate_idx];
-// 				// grad_vector[source_idx] = grad_vector[source_idx] + torch::conj(conjugate_grad);
-// 				grad_vector[source_idx] = grad_vector[source_idx] - conjugate_grad;
-// 			}
-// 		}
-
-// 		return grad_vector;
-// 	}
-// 	// static torch::Tensor extendVectorWithConjugates(const torch::Tensor &vector,
-// 	// 												const std::vector<std::vector<int>> &con_trans_id,
-// 	// 												const std::vector<std::vector<std::complex<double>>> &con_trans_values,
-// 	// 												const torch::Device &device)
-// 	// {
-// 	// 	const int original_size = vector.numel();
-// 	// 	int extended_size = original_size + con_trans_id.size();
-
-// 	// 	// 计算需要扩展的大小
-// 	// 	// for (const auto &pair : con_trans_id)
-// 	// 	// {
-// 	// 	// 	extended_size = std::max(extended_size, std::max(pair.first, pair.second) + 1);
-// 	// 	// }
-
-// 	// 	if (extended_size == original_size)
-// 	// 	{
-// 	// 		return vector.clone();
-// 	// 	}
-
-// 	// 	// 创建扩展后的向量
-// 	// 	torch::Tensor extended_vector = torch::zeros({extended_size}, torch::kComplexFloat).to(device);
-
-// 	// 	// 复制原始向量到扩展向量
-// 	// 	extended_vector.slice(0, 0, original_size) = vector;
-
-// 	// 	// 设置约束
-// 	// 	for (const auto &vecid : con_trans_id)
-// 	// 	{
-// 	// 		int source_idx = pair.first;
-// 	// 		int conjugate_idx = pair.second;
-
-// 	// 		if (source_idx < original_size && conjugate_idx < extended_size)
-// 	// 		{
-// 	// 			// 获取源元素的共轭
-// 	// 			torch::Tensor source_val = extended_vector[source_idx];
-// 	// 			// extended_vector[conjugate_idx] = torch::conj(source_val);
-// 	// 			extended_vector[conjugate_idx] = -1.0 * source_val;
-// 	// 		}
-// 	// 	}
-
-// 	// 	return extended_vector;
-// 	// }
-
-// 	// static torch::Tensor mergeGradientsWithConjugates(const torch::Tensor &extended_grad,
-// 	// 												  const std::vector<std::pair<int, int>> &conjugate_pairs,
-// 	// 												  int original_size)
-// 	// {
-// 	// 	torch::Tensor grad_vector = torch::zeros({original_size}, torch::kComplexFloat).to(extended_grad.device());
-
-// 	// 	// 复制直接梯度
-// 	// 	grad_vector = extended_grad.slice(0, 0, original_size);
-
-// 	// 	// 合并共轭对的梯度
-// 	// 	for (const auto &pair : conjugate_pairs)
-// 	// 	{
-// 	// 		int source_idx = pair.first;
-// 	// 		int conjugate_idx = pair.second;
-
-// 	// 		if (source_idx < original_size && conjugate_idx < extended_grad.numel())
-// 	// 		{
-// 	// 			// 对于共轭关系：y = conj(x)，梯度关系：dy/dx = conj(dL/dy)
-// 	// 			torch::Tensor conjugate_grad = extended_grad[conjugate_idx];
-// 	// 			// grad_vector[source_idx] = grad_vector[source_idx] + torch::conj(conjugate_grad);
-// 	// 			grad_vector[source_idx] = grad_vector[source_idx] - conjugate_grad;
-// 	// 		}
-// 	// 	}
-
-// 	// 	return grad_vector;
-// 	// }
-// };
+double *readWeightsFromFile(const std::string &filename, int length)
+{
+	std::ifstream file(filename);
+	if (!file.is_open())
+	{
+		std::cerr << "Error: Cannot open file " << filename << std::endl;
+		return nullptr;
+	}
+
+	std::vector<double> weights;
+	double weight;
+	while (file >> weight)
+	{
+		weights.push_back(weight);
+	}
+
+	file.close();
+
+	if (length > 0 && weights.size() != static_cast<size_t>(length))
+	{
+		std::cerr << "Error: Weights size " << weights.size() << " does not match expected length " << length << std::endl;
+		// return nullptr;
+	}
+	// length = weights.size();
+	double *d_weights = nullptr;
+	cudaMalloc(&d_weights, length * sizeof(double));
+	cudaMemcpy(d_weights, weights.data(), length * sizeof(double), cudaMemcpyHostToDevice);
+
+	return d_weights;
+}
 
 class NLLFunction : public torch::autograd::Function<NLLFunction>
 {
@@ -551,6 +173,7 @@ public:
 								 const cuComplex *phsp_fix_,
 								 int phsp_length,
 								 const cuComplex *bkg_fix_,
+								 const double *bkg_weights_,
 								 int bkg_length)
 	{
 		TORCH_CHECK(vector.is_cuda(), "[NLLForward] vector must be on CUDA");
@@ -589,7 +212,7 @@ public:
 		cudaMalloc(&d_Q, Q_numel * sizeof(cuComplex));
 		cudaMalloc(&d_data_nll, sizeof(double));
 
-		computeNll(data_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_S, d_Q, d_data_nll, data_length, extended_n_gls, n_polar_, h_phsp_factor);
+		computeNll(data_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), nullptr, d_S, d_Q, d_data_nll, data_length, extended_n_gls, n_polar_, h_phsp_factor);
 
 		double h_data_nll;
 		cudaMemcpy(&h_data_nll, d_data_nll, sizeof(double), cudaMemcpyDeviceToHost);
@@ -605,7 +228,7 @@ public:
 		double h_bkg_nll = 0.0;
 		if (bkg_fix_ != nullptr && bkg_length > 0)
 		{
-			computeNll(bkg_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_bkg_S, d_bkg_Q, d_bkg_nll, bkg_length, extended_n_gls, n_polar_, h_phsp_factor);
+			computeNll(bkg_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), bkg_weights_, d_bkg_S, d_bkg_Q, d_bkg_nll, bkg_length, extended_n_gls, n_polar_, h_phsp_factor);
 
 			cudaMemcpy(&h_bkg_nll, d_bkg_nll, sizeof(double), cudaMemcpyDeviceToHost);
 		}
@@ -624,6 +247,7 @@ public:
 		ctx->saved_data["data_fix_ptr"] = reinterpret_cast<int64_t>(data_fix_);
 		ctx->saved_data["phsp_fix_ptr"] = reinterpret_cast<int64_t>(phsp_fix_);
 		ctx->saved_data["bkg_fix_ptr"] = reinterpret_cast<int64_t>(bkg_fix_);
+		ctx->saved_data["bkg_weights_ptr"] = reinterpret_cast<int64_t>(bkg_weights_);
 		ctx->saved_data["d_B_ptr"] = reinterpret_cast<int64_t>(d_B);
 		ctx->saved_data["d_S_ptr"] = reinterpret_cast<int64_t>(d_S);
 		ctx->saved_data["d_Q_ptr"] = reinterpret_cast<int64_t>(d_Q);
@@ -661,6 +285,7 @@ public:
 		cuComplex *d_Q = reinterpret_cast<cuComplex *>(ctx->saved_data["d_Q_ptr"].toInt());
 
 		cuComplex *bkg_fix = reinterpret_cast<cuComplex *>(ctx->saved_data["bkg_fix_ptr"].toInt());
+		double *bkg_weights = reinterpret_cast<double *>(ctx->saved_data["bkg_weights_ptr"].toInt());
 		cuComplex *d_bkg_S = reinterpret_cast<cuComplex *>(ctx->saved_data["d_bkg_S_ptr"].toInt());
 		cuComplex *d_bkg_Q = reinterpret_cast<cuComplex *>(ctx->saved_data["d_bkg_Q_ptr"].toInt());
 
@@ -675,7 +300,7 @@ public:
 
 		cublasHandle_t cublas_handle;
 		cublasCreate(&cublas_handle);
-		compute_gradient(data_fix, phsp_fix, d_S, d_Q, d_B, h_phsp_factor, extended_n_gls, data_length / n_polar, n_polar, phsp_length, d_extended_grad, cublas_handle);
+		compute_gradient(data_fix, phsp_fix, d_S, d_Q, d_B, nullptr, h_phsp_factor, extended_n_gls, data_length / n_polar, n_polar, phsp_length, d_extended_grad, cublas_handle);
 
 		// 如果有背景数据，减去背景NLL的梯度
 		if (bkg_fix != nullptr && bkg_length > 0)
@@ -685,7 +310,7 @@ public:
 
 			cudaMemset(d_bkg_extended_grad, 0, extended_n_gls * sizeof(cuComplex));
 
-			compute_gradient(bkg_fix, phsp_fix, d_bkg_S, d_bkg_Q, d_B, h_phsp_factor, extended_n_gls, bkg_length / n_polar, n_polar, phsp_length, d_bkg_extended_grad, cublas_handle);
+			compute_gradient(bkg_fix, phsp_fix, d_bkg_S, d_bkg_Q, d_B, bkg_weights, h_phsp_factor, extended_n_gls, bkg_length / n_polar, n_polar, phsp_length, d_bkg_extended_grad, cublas_handle);
 
 			const cuComplex minus_one = make_cuComplex(-1.0f, 0.0f);
 			cublasCaxpy(cublas_handle, extended_n_gls,
@@ -711,8 +336,7 @@ public:
 		cudaFree(d_Q);
 		cublasDestroy(cublas_handle);
 
-		return {grad_vector, torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(),
-				torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor()};
+		return {grad_vector, torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor(), torch::Tensor()};
 	}
 
 	// 设置约束的静态方法
@@ -985,7 +609,7 @@ public:
 
 	torch::Tensor getNLL(torch::Tensor &vector)
 	{
-		return NLLFunction::apply(vector, n_gls_, n_polar_, data_fix_, data_length, phsp_fix_, phsp_length, bkg_fix_, bkg_length);
+		return NLLFunction::apply(vector, n_gls_, n_polar_, data_fix_, data_length, phsp_fix_, phsp_length, bkg_fix_, bkg_weights_, bkg_length);
 		// return NLLFunction::apply(vector, n_gls_, n_polar_, data_fix_, data_length, phsp_fix_, phsp_length, bkg_fix_, bkg_length, con_trans_id_, con_trans_values_);
 		// return NLLFunction::apply(vector, n_gls_, n_polar_, data_fix_, data_length, phsp_fix_, phsp_length, bkg_fix_, bkg_length, conjugate_pairs_);
 		// return NLLFunction::apply(vector, n_gls_, n_polar_, data_fix_, data_length, phsp_fix_, phsp_length, bkg_fix_, bkg_length);
@@ -1612,6 +1236,7 @@ private:
 	cuComplex *phsp_fix_;
 	int phsp_length;
 	cuComplex *bkg_fix_;
+	double *bkg_weights_ = nullptr;
 	int bkg_length;
 
 	// 四动量数据
@@ -1693,6 +1318,12 @@ private:
 			std::cout << "Calculating background amplitudes..." << std::endl;
 			bkg_fix_ = calculateAmplitudes(Vp4_bkg_);
 			bkg_length = Vp4_bkg_.begin()->second.size() * n_polar_;
+
+			if (data_files.count("bkg_weights") > 0)
+			{
+				std::string bkg_weights_file = data_files.at("bkg_weights")[0];
+				bkg_weights_ = readWeightsFromFile(bkg_weights_file, Vp4_bkg_.begin()->second.size());
+			}
 		}
 
 		NLLFunction::setConstraints(con_trans_id_, con_trans_values_);
