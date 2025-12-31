@@ -2083,9 +2083,9 @@ private:
 PYBIND11_MODULE(ctpwa, m)
 {
 	m.doc() = "ctpwa";
-	pybind11::class_<std::pair<int, int>>(m, "ConjugatePair")
-		.def_readonly("first", &std::pair<int, int>::first)
-		.def_readonly("second", &std::pair<int, int>::second);
+	// pybind11::class_<std::pair<int, int>>(m, "ConjugatePair")
+	// 	.def_readonly("first", &std::pair<int, int>::first)
+	// 	.def_readonly("second", &std::pair<int, int>::second);
 
 	pybind11::class_<analysis>(m, "analysis")
 		.def(pybind11::init<>())

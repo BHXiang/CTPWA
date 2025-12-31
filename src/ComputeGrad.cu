@@ -50,16 +50,17 @@ __global__ void sumWeightsKernel(
     int tid = threadIdx.x;
     int idx = blockIdx.x * blockDim.x + tid;
 
-    double local_sum = 0.0;
+    // 初始化共享内存
+    sdata[tid] = 0.0;
+
+    // 加载数据到共享内存
     if (idx < A)
     {
-        local_sum = weights[idx];
+        sdata[tid] = weights[idx];
     }
-
-    sdata[tid] = local_sum;
     __syncthreads();
 
-    // 归约求和
+    // 归约求和（支持任意block大小）
     for (int s = blockDim.x / 2; s > 0; s >>= 1)
     {
         if (tid < s)
@@ -116,7 +117,8 @@ void compute_gradient(
         // 调用权重求和核函数
         int blockSize = 256;
         int gridSize = (A + blockSize - 1) / blockSize;
-        sumWeightsKernel<<<gridSize, blockSize>>>(d_weights, d_sum_weight, A);
+        size_t sharedMemSize = blockSize * sizeof(double);
+        sumWeightsKernel<<<gridSize, blockSize, sharedMemSize>>>(d_weights, d_sum_weight, A);
 
         // 复制回主机
         cudaMemcpy(&sum_weight, d_sum_weight, sizeof(double), cudaMemcpyDeviceToHost);
