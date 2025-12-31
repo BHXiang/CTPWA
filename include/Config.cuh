@@ -77,7 +77,7 @@ public:
     const std::vector<DecayChainConfig> &getDecayChains() const { return decay_chains_; }
     const std::map<std::string, ResonanceConfig> &getResonances() const { return resonances_; }
     const std::map<std::string, std::vector<std::string>> &getDataFiles() const { return data_files_; }
-    const std::vector<std::string> &getDatOrder() const { return dat_order_; }
+    const std::vector<std::string> &getDataOrder() const { return data_order_; }
     const std::vector<ConstraintConfig> &getConstraints() const { return constraints_; }
     const std::vector<PlotConfig> &getPlotConfigs() const { return plot_configs_; }
 
@@ -97,7 +97,7 @@ private:
     std::vector<DecayChainConfig> decay_chains_;
     std::map<std::string, ResonanceConfig> resonances_;
     std::map<std::string, std::vector<std::string>> data_files_;
-    std::vector<std::string> dat_order_;
+    std::vector<std::string> data_order_;
     std::vector<ConstraintConfig> constraints_;
     std::vector<PlotConfig> plot_configs_;
 };

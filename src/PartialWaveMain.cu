@@ -29,18 +29,122 @@ struct ChainInfo
 };
 
 ////////////////////////////////////////
+// std::map<std::string, std::vector<LorentzVector>> readMomentaFromDat(
+// 	const std::string &filename,
+// 	const std::vector<std::string> &particleNames,
+// 	const std::vector<std::string> &particlelists,
+// 	int nEvents = -1)
+// {
+// 	std::map<std::string, std::vector<LorentzVector>> finalMomenta;
+// 	// for (const auto &name : particleNames)
+// 	for (const auto &name : particlelists)
+// 	{
+// 		finalMomenta[name] = std::vector<LorentzVector>();
+// 	}
+
+// 	std::unordered_set<std::string> particleNameSet(particleNames.begin(), particleNames.end());
+// 	std::string initialName;
+// 	bool foundParticle = false;
+
+// 	for (const auto &name : particlelists)
+// 	{
+// 		if (particleNameSet.find(name) == particleNameSet.end())
+// 		{
+// 			if (!foundParticle)
+// 			{
+// 				initialName = name;
+// 				foundParticle = true;
+// 			}
+// 			else
+// 			{
+// 				std::cerr << "Error: Found multiple particles in particlelists not present in particleNames" << std::endl;
+// 				return finalMomenta;
+// 			}
+// 		}
+// 	}
+
+// 	std::ifstream file(filename);
+// 	if (!file.is_open())
+// 	{
+// 		std::cerr << "Error: Cannot open file " << filename << std::endl;
+// 		return finalMomenta;
+// 	}
+
+// 	std::string line;
+// 	int eventCount = 0;
+// 	int lineCount = 0;
+// 	int particlesPerEvent = particleNames.size();
+
+// 	while (std::getline(file, line))
+// 	{
+// 		if (line.empty())
+// 			continue;
+
+// 		std::istringstream iss(line);
+// 		double E, px, py, pz;
+
+// 		if (iss >> E >> px >> py >> pz)
+// 		{
+// 			// 根据行号确定粒子类型
+// 			int particleIndex = lineCount % particlesPerEvent;
+// 			const std::string &particleName = particleNames[particleIndex];
+
+// 			finalMomenta[particleName].emplace_back(E, px, py, pz);
+// 			lineCount++;
+
+// 			// 每读完一组粒子表示完成一个事件
+// 			if (particleIndex == particlesPerEvent - 1)
+// 			{
+// 				LorentzVector initialMomentum(0, 0, 0, 0);
+// 				for (const auto &name : particleNames)
+// 				{
+// 					initialMomentum = initialMomentum + finalMomenta[name].back();
+// 				}
+
+// 				finalMomenta[initialName].emplace_back(initialMomentum);
+
+// 				eventCount++;
+
+// 				// 如果指定了事件数并且已达到，则停止读取
+// 				if (nEvents > 0 && eventCount >= nEvents)
+// 				{
+// 					break;
+// 				}
+// 			}
+// 		}
+// 		else
+// 		{
+// 			std::cerr << "Warning: Invalid line format: " << line << std::endl;
+// 		}
+// 	}
+
+// 	file.close();
+
+// 	// std::cout << "Successfully read " << eventCount << " events from " << filename << std::endl;
+// 	return finalMomenta;
+// }
+
 std::map<std::string, std::vector<LorentzVector>> readMomentaFromDat(
-	const std::string &filename,
+	const std::vector<std::string> &fileinfo,
 	const std::vector<std::string> &particleNames,
 	const std::vector<std::string> &particlelists,
 	int nEvents = -1)
 {
-	std::map<std::string, std::vector<LorentzVector>> finalMomenta;
-	// for (const auto &name : particleNames)
+	std::map<std::string, std::vector<LorentzVector>> fullMomenta;
 	for (const auto &name : particlelists)
 	{
-		finalMomenta[name] = std::vector<LorentzVector>();
+		fullMomenta[name] = std::vector<LorentzVector>();
 	}
+
+	// 检查输入参数
+	if (fileinfo.size() < 2)
+	{
+		std::cerr << "Error: fileinfo must contain at least file type and filename" << std::endl;
+		return fullMomenta;
+	}
+
+	std::string fileType = fileinfo[0];
+	std::string filename = fileinfo[1];
 
 	std::unordered_set<std::string> particleNameSet(particleNames.begin(), particleNames.end());
 	std::string initialName;
@@ -58,103 +162,336 @@ std::map<std::string, std::vector<LorentzVector>> readMomentaFromDat(
 			else
 			{
 				std::cerr << "Error: Found multiple particles in particlelists not present in particleNames" << std::endl;
-				return finalMomenta;
+				return fullMomenta;
 			}
 		}
 	}
 
-	std::ifstream file(filename);
-	if (!file.is_open())
+	// 处理DAT文件
+	if (fileType == "dat")
 	{
-		std::cerr << "Error: Cannot open file " << filename << std::endl;
-		return finalMomenta;
-	}
-
-	std::string line;
-	int eventCount = 0;
-	int lineCount = 0;
-	int particlesPerEvent = particleNames.size();
-
-	while (std::getline(file, line))
-	{
-		if (line.empty())
-			continue;
-
-		std::istringstream iss(line);
-		double E, px, py, pz;
-
-		if (iss >> E >> px >> py >> pz)
+		std::ifstream file(filename);
+		if (!file.is_open())
 		{
-			// 根据行号确定粒子类型
-			int particleIndex = lineCount % particlesPerEvent;
-			const std::string &particleName = particleNames[particleIndex];
+			std::cerr << "Error: Cannot open file " << filename << std::endl;
+			return fullMomenta;
+		}
 
-			finalMomenta[particleName].emplace_back(E, px, py, pz);
-			lineCount++;
+		std::string line;
+		int eventCount = 0;
+		int lineCount = 0;
+		int particlesPerEvent = particleNames.size();
 
-			// 每读完一组粒子表示完成一个事件
-			if (particleIndex == particlesPerEvent - 1)
+		while (std::getline(file, line))
+		{
+			if (line.empty())
+				continue;
+
+			std::istringstream iss(line);
+			double E, px, py, pz;
+
+			if (iss >> E >> px >> py >> pz)
 			{
-				LorentzVector initialMomentum(0, 0, 0, 0);
-				for (const auto &name : particleNames)
+				// 根据行号确定粒子类型
+				int particleIndex = lineCount % particlesPerEvent;
+				const std::string &particleName = particleNames[particleIndex];
+
+				fullMomenta[particleName].emplace_back(E, px, py, pz);
+				lineCount++;
+
+				// 每读完一组粒子表示完成一个事件
+				if (particleIndex == particlesPerEvent - 1)
 				{
-					initialMomentum = initialMomentum + finalMomenta[name].back();
-				}
+					LorentzVector initialMomentum(0, 0, 0, 0);
+					for (const auto &name : particleNames)
+					{
+						initialMomentum = initialMomentum + fullMomenta[name].back();
+					}
 
-				finalMomenta[initialName].emplace_back(initialMomentum);
+					fullMomenta[initialName].emplace_back(initialMomentum);
 
-				eventCount++;
+					eventCount++;
 
-				// 如果指定了事件数并且已达到，则停止读取
-				if (nEvents > 0 && eventCount >= nEvents)
-				{
-					break;
+					// 如果指定了事件数并且已达到，则停止读取
+					if (nEvents > 0 && eventCount >= nEvents)
+					{
+						break;
+					}
 				}
 			}
+			else
+			{
+				std::cerr << "Warning: Invalid line format: " << line << std::endl;
+			}
 		}
+
+		file.close();
+	}
+	// 处理ROOT文件
+	else if (fileType == "ROOT" || fileType == "root")
+	{
+		// #ifdef USE_ROOT
+		if (fileinfo.size() < 3)
+		{
+			std::cerr << "Error: For ROOT files, fileinfo must contain at least file type, filename and TTree name" << std::endl;
+			return fullMomenta;
+		}
+
+		std::string treeName = fileinfo[2];
+
+		// 打开ROOT文件
+		TFile *file = TFile::Open(filename.c_str(), "READ");
+		if (!file || file->IsZombie())
+		{
+			std::cerr << "Error: Cannot open ROOT file " << filename << std::endl;
+			return fullMomenta;
+		}
+
+		// 获取TTree
+		TTree *tree = (TTree *)file->Get(treeName.c_str());
+		if (!tree)
+		{
+			std::cerr << "Error: Cannot find TTree " << treeName << " in file " << filename << std::endl;
+			file->Close();
+			delete file;
+			return fullMomenta;
+		}
+
+		// 准备读取TLorentzVector的分支
+		std::vector<TLorentzVector *> particleLV(particleNames.size());
+		std::vector<std::string> branchNames;
+
+		// 如果提供了分支名，使用提供的分支名
+		if (fileinfo.size() >= 4 + particleNames.size())
+		{
+			for (size_t i = 0; i < particleNames.size(); ++i)
+			{
+				branchNames.push_back(fileinfo[3 + i]);
+			}
+		}
+		// 否则使用粒子名作为分支名
 		else
 		{
-			std::cerr << "Warning: Invalid line format: " << line << std::endl;
+			branchNames = particleNames;
 		}
+
+		// 设置分支地址
+		for (size_t i = 0; i < particleNames.size(); ++i)
+		{
+			particleLV[i] = new TLorentzVector();
+			tree->SetBranchAddress(branchNames[i].c_str(), &particleLV[i]);
+		}
+
+		// 读取事件
+		Long64_t nEntries = tree->GetEntries();
+		if (nEvents > 0 && nEvents < nEntries)
+		{
+			nEntries = nEvents;
+		}
+
+		for (Long64_t iEvent = 0; iEvent < nEntries; ++iEvent)
+		{
+			tree->GetEntry(iEvent);
+
+			// 读取每个粒子的四动量
+			for (size_t i = 0; i < particleNames.size(); ++i)
+			{
+				const std::string &particleName = particleNames[i];
+				TLorentzVector *lv = particleLV[i];
+
+				// 转换为你的LorentzVector类型
+				// 假设你的LorentzVector构造函数接受(E, px, py, pz)
+				fullMomenta[particleName].emplace_back(
+					lv->E(), lv->Px(), lv->Py(), lv->Pz());
+			}
+
+			// 计算初始粒子的四动量
+			LorentzVector initialMomentum(0, 0, 0, 0);
+			for (const auto &name : particleNames)
+			{
+				initialMomentum = initialMomentum + fullMomenta[name].back();
+			}
+			fullMomenta[initialName].emplace_back(initialMomentum);
+		}
+
+		// 清理内存
+		for (auto lv : particleLV)
+		{
+			delete lv;
+		}
+
+		file->Close();
+		delete file;
+		// #else
+		// std::cerr << "Error: ROOT support not compiled in. Please define USE_ROOT and link with ROOT libraries." << std::endl;
+		// return fullMomenta;
+		// #endif
+	}
+	else
+	{
+		std::cerr << "Error: Unknown file type: " << fileType << std::endl;
+		return fullMomenta;
 	}
 
-	file.close();
-
-	// std::cout << "Successfully read " << eventCount << " events from " << filename << std::endl;
-	return finalMomenta;
+	return fullMomenta;
 }
 
-double *readWeightsFromFile(const std::string &filename, int length)
+// double *readWeightsFromFile(const std::string &filename, int length)
+// {
+// 	std::ifstream file(filename);
+// 	if (!file.is_open())
+// 	{
+// 		std::cerr << "Error: Cannot open file " << filename << std::endl;
+// 		return nullptr;
+// 	}
+
+// 	std::vector<double> weights;
+// 	double weight;
+// 	while (file >> weight)
+// 	{
+// 		weights.push_back(weight);
+// 	}
+
+// 	file.close();
+
+// 	if (length > 0 && weights.size() != static_cast<size_t>(length))
+// 	{
+// 		std::cerr << "Error: Weights size " << weights.size() << " does not match expected length " << length << std::endl;
+// 		// return nullptr;
+// 	}
+// 	// length = weights.size();
+// 	double *d_weights = nullptr;
+// 	cudaMalloc(&d_weights, length * sizeof(double));
+// 	cudaMemcpy(d_weights, weights.data(), length * sizeof(double), cudaMemcpyHostToDevice);
+
+// 	return d_weights;
+// }
+double *readWeightsFromFile(const std::vector<std::string> &fileinfo, int length)
 {
-	std::ifstream file(filename);
-	if (!file.is_open())
+	// 检查输入参数
+	if (fileinfo.size() < 2)
 	{
-		std::cerr << "Error: Cannot open file " << filename << std::endl;
+		std::cerr << "Error: fileinfo must contain at least file type and filename" << std::endl;
 		return nullptr;
 	}
 
+	std::string fileType = fileinfo[0];
+	std::string filename = fileinfo[1];
+
 	std::vector<double> weights;
-	double weight;
-	while (file >> weight)
+
+	// 处理DAT文件
+	if (fileType == "dat")
 	{
-		weights.push_back(weight);
+		std::ifstream file(filename);
+		if (!file.is_open())
+		{
+			std::cerr << "Error: Cannot open file " << filename << std::endl;
+			return nullptr;
+		}
+
+		double weight;
+		while (file >> weight)
+		{
+			weights.push_back(weight);
+		}
+
+		file.close();
+	}
+	// 处理ROOT文件
+	else if (fileType == "ROOT")
+	{
+		// #ifdef USE_ROOT
+		if (fileinfo.size() < 4)
+		{
+			std::cerr << "Error: For ROOT files, fileinfo must contain at least file type, filename, TTree name and weight branch name" << std::endl;
+			return nullptr;
+		}
+
+		std::string treeName = fileinfo[2];
+		std::string branchName = fileinfo[3];
+
+		// 打开ROOT文件
+		TFile *file = TFile::Open(filename.c_str(), "READ");
+		if (!file || file->IsZombie())
+		{
+			std::cerr << "Error: Cannot open ROOT file " << filename << std::endl;
+			return nullptr;
+		}
+
+		// 获取TTree
+		TTree *tree = (TTree *)file->Get(treeName.c_str());
+		if (!tree)
+		{
+			std::cerr << "Error: Cannot find TTree " << treeName << " in file " << filename << std::endl;
+			file->Close();
+			delete file;
+			return nullptr;
+		}
+
+		// 设置权重分支
+		double weight = 0.0;
+		tree->SetBranchAddress(branchName.c_str(), &weight);
+
+		// 读取所有事件的权重
+		Long64_t nEntries = tree->GetEntries();
+		for (Long64_t iEvent = 0; iEvent < nEntries; ++iEvent)
+		{
+			tree->GetEntry(iEvent);
+			weights.push_back(weight);
+		}
+
+		file->Close();
+		delete file;
+		// #else
+		// std::cerr << "Error: ROOT support not compiled in. Please define USE_ROOT and link with ROOT libraries." << std::endl;
+		// return nullptr;
+		// #endif
+	}
+	else
+	{
+		std::cerr << "Error: Unknown file type: " << fileType << std::endl;
+		return nullptr;
 	}
 
-	file.close();
-
+	// 检查权重数量
 	if (length > 0 && weights.size() != static_cast<size_t>(length))
 	{
 		std::cerr << "Error: Weights size " << weights.size() << " does not match expected length " << length << std::endl;
+		// 可以根据需求决定是否返回nullptr
 		// return nullptr;
 	}
-	// length = weights.size();
+
+	// 如果length为-1或0，使用实际读取的权重数量
+	if (length <= 0)
+	{
+		length = weights.size();
+	}
+
+	// 分配设备内存并复制数据
 	double *d_weights = nullptr;
-	cudaMalloc(&d_weights, length * sizeof(double));
-	cudaMemcpy(d_weights, weights.data(), length * sizeof(double), cudaMemcpyHostToDevice);
+	cudaError_t cudaStatus = cudaMalloc(&d_weights, length * sizeof(double));
+	// 确保weights向量有足够的元素
+	if (weights.size() < static_cast<size_t>(length))
+	{
+		std::cerr << "Warning: Not enough weights in file. Padding with zeros." << std::endl;
+		weights.resize(length, 0.0);
+	}
+
+	cudaStatus = cudaMemcpy(d_weights, weights.data(), length * sizeof(double), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess)
+	{
+		std::cerr << "Error: cudaMemcpy failed for weights: " << cudaGetErrorString(cudaStatus) << std::endl;
+		cudaFree(d_weights);
+		return nullptr;
+	}
 
 	return d_weights;
 }
 
+//////////////////////////////////////////////////////////////
+/// NLLFunction 类定义
+///////////////////////////////////////////////////////////////
 class NLLFunction : public torch::autograd::Function<NLLFunction>
 {
 private:
@@ -1282,7 +1619,7 @@ private:
 		// // 获取配置信息
 		// const auto &config_parser = calculator.getConfigParser();
 		const auto &data_files = config_parser_.getDataFiles();
-		const auto &dat_order = config_parser_.getDatOrder();
+		const auto &data_order = config_parser_.getDataOrder();
 
 		legends_ = config_parser_.getLegends();
 		n_gls_ = n_amplitudes_;
@@ -1295,7 +1632,7 @@ private:
 
 		// 计算相空间振幅
 		std::cout << "Reading phase space samples..." << std::endl;
-		Vp4_phsp_ = readMomentaFromDat(data_files.at("phsp")[0], dat_order, particles_names);
+		Vp4_phsp_ = readMomentaFromDat(data_files.at("phsp"), data_order, particles_names);
 		std::cout << "Phase space events: " << Vp4_phsp_.begin()->second.size() << std::endl;
 		std::cout << "Calculating phase space amplitudes..." << std::endl;
 		phsp_fix_ = calculateAmplitudes(Vp4_phsp_);
@@ -1303,7 +1640,7 @@ private:
 
 		// 计算数据振幅
 		std::cout << "Reading data samples..." << std::endl;
-		Vp4_data_ = readMomentaFromDat(data_files.at("data")[0], dat_order, particles_names);
+		Vp4_data_ = readMomentaFromDat(data_files.at("data"), data_order, particles_names);
 		std::cout << "data events: " << Vp4_data_.begin()->second.size() << std::endl;
 		std::cout << "Calculating data amplitudes..." << std::endl;
 		data_fix_ = calculateAmplitudes(Vp4_data_);
@@ -1313,7 +1650,7 @@ private:
 		if (data_files.count("bkg") > 0)
 		{
 			std::cout << "Reading background samples..." << std::endl;
-			Vp4_bkg_ = readMomentaFromDat(data_files.at("bkg")[0], dat_order, particles_names);
+			Vp4_bkg_ = readMomentaFromDat(data_files.at("bkg"), data_order, particles_names);
 			std::cout << "Background events: " << Vp4_bkg_.begin()->second.size() << std::endl;
 			std::cout << "Calculating background amplitudes..." << std::endl;
 			bkg_fix_ = calculateAmplitudes(Vp4_bkg_);
@@ -1321,8 +1658,7 @@ private:
 
 			if (data_files.count("bkg_weights") > 0)
 			{
-				std::string bkg_weights_file = data_files.at("bkg_weights")[0];
-				bkg_weights_ = readWeightsFromFile(bkg_weights_file, Vp4_bkg_.begin()->second.size());
+				bkg_weights_ = readWeightsFromFile(data_files.at("bkg_weights"), Vp4_bkg_.begin()->second.size());
 			}
 		}
 
