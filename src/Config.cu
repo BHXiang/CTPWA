@@ -323,8 +323,8 @@ void ConfigParser::parseParticles(const YAML::Node &node)
 
 void ConfigParser::parseData(const YAML::Node &node)
 {
-    if (node["data_order"])
-        data_order_ = node["data_order"].as<std::vector<std::string>>();
+    if (node["order"])
+        data_order_ = node["order"].as<std::vector<std::string>>();
 
     if (node["data"])
         data_files_["data"] = node["data"].as<std::vector<std::string>>();

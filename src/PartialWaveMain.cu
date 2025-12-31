@@ -399,7 +399,7 @@ double *readWeightsFromFile(const std::vector<std::string> &fileinfo, int length
 		file.close();
 	}
 	// 处理ROOT文件
-	else if (fileType == "ROOT")
+	else if (fileType == "ROOT" || fileType == "root")
 	{
 		// #ifdef USE_ROOT
 		if (fileinfo.size() < 4)
