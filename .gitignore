@@ -1,4 +1,6 @@
 *
+.vscode
+.vscode/*
 !src/
 !src/**
 !include/
