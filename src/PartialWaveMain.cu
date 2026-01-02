@@ -1185,6 +1185,9 @@ public:
 		std::vector<MassHistConfig> masshist;
 		std::vector<AngleHistConfig> anglehist;
 		std::vector<DalitzHistConfig> dalitzhist;
+		int mass_hist_count = 0;
+		int angle_hist_count = 0;
+		int dalitz_hist_count = 0;
 		for (const auto &histConfig : plotconfig)
 		{
 			// 输出histConfig内容以进行调试
@@ -1196,10 +1199,10 @@ public:
 				std::vector<double> range = histConfig.ranges[0];
 				std::vector<std::string> display = histConfig.display;
 
-				std::string hist_name = "mass_";
+				std::string hist_name = "mass" + std::to_string(mass_hist_count++);
 				for (const auto &p : particles)
 				{
-					hist_name += p;
+					hist_name += "_" + p;
 				}
 				std::cout << "Creating mass histogram: " << hist_name << std::endl;
 				masshist.emplace_back(hist_name, "", particles, bins, range, display);
@@ -1211,7 +1214,7 @@ public:
 				int bins = histConfig.bins[0];
 				std::vector<double> range = histConfig.ranges[0];
 				std::vector<std::string> display = histConfig.display;
-				std::string hist_name = "cosbeta";
+				std::string hist_name = "cosbeta" + std::to_string(angle_hist_count++);
 				for (const auto &pvec : particles)
 				{
 					hist_name += "_";
@@ -1229,7 +1232,7 @@ public:
 				std::vector<int> bins = histConfig.bins;
 				std::vector<std::vector<double>> ranges = histConfig.ranges;
 				std::vector<std::string> display = histConfig.display;
-				std::string hist_name = "dalitz";
+				std::string hist_name = "dalitz" + std::to_string(dalitz_hist_count++);
 				for (const auto &pvec : particles)
 				{
 					hist_name += "_";

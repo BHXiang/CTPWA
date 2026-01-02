@@ -20,7 +20,7 @@ enum class ResModelType : int
 {
     BWR = 0, // Breit-Wigner
     ONE = 1,
-    FLATTE = 2 // LASS模型
+    FLATTE = 2
 };
 
 // 设备端共振结构体
