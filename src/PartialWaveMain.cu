@@ -29,101 +29,6 @@ struct ChainInfo
 };
 
 ////////////////////////////////////////
-// std::map<std::string, std::vector<LorentzVector>> readMomentaFromDat(
-// 	const std::string &filename,
-// 	const std::vector<std::string> &particleNames,
-// 	const std::vector<std::string> &particlelists,
-// 	int nEvents = -1)
-// {
-// 	std::map<std::string, std::vector<LorentzVector>> finalMomenta;
-// 	// for (const auto &name : particleNames)
-// 	for (const auto &name : particlelists)
-// 	{
-// 		finalMomenta[name] = std::vector<LorentzVector>();
-// 	}
-
-// 	std::unordered_set<std::string> particleNameSet(particleNames.begin(), particleNames.end());
-// 	std::string initialName;
-// 	bool foundParticle = false;
-
-// 	for (const auto &name : particlelists)
-// 	{
-// 		if (particleNameSet.find(name) == particleNameSet.end())
-// 		{
-// 			if (!foundParticle)
-// 			{
-// 				initialName = name;
-// 				foundParticle = true;
-// 			}
-// 			else
-// 			{
-// 				std::cerr << "Error: Found multiple particles in particlelists not present in particleNames" << std::endl;
-// 				return finalMomenta;
-// 			}
-// 		}
-// 	}
-
-// 	std::ifstream file(filename);
-// 	if (!file.is_open())
-// 	{
-// 		std::cerr << "Error: Cannot open file " << filename << std::endl;
-// 		return finalMomenta;
-// 	}
-
-// 	std::string line;
-// 	int eventCount = 0;
-// 	int lineCount = 0;
-// 	int particlesPerEvent = particleNames.size();
-
-// 	while (std::getline(file, line))
-// 	{
-// 		if (line.empty())
-// 			continue;
-
-// 		std::istringstream iss(line);
-// 		double E, px, py, pz;
-
-// 		if (iss >> E >> px >> py >> pz)
-// 		{
-// 			// 根据行号确定粒子类型
-// 			int particleIndex = lineCount % particlesPerEvent;
-// 			const std::string &particleName = particleNames[particleIndex];
-
-// 			finalMomenta[particleName].emplace_back(E, px, py, pz);
-// 			lineCount++;
-
-// 			// 每读完一组粒子表示完成一个事件
-// 			if (particleIndex == particlesPerEvent - 1)
-// 			{
-// 				LorentzVector initialMomentum(0, 0, 0, 0);
-// 				for (const auto &name : particleNames)
-// 				{
-// 					initialMomentum = initialMomentum + finalMomenta[name].back();
-// 				}
-
-// 				finalMomenta[initialName].emplace_back(initialMomentum);
-
-// 				eventCount++;
-
-// 				// 如果指定了事件数并且已达到，则停止读取
-// 				if (nEvents > 0 && eventCount >= nEvents)
-// 				{
-// 					break;
-// 				}
-// 			}
-// 		}
-// 		else
-// 		{
-// 			std::cerr << "Warning: Invalid line format: " << line << std::endl;
-// 		}
-// 	}
-
-// 	file.close();
-
-// 	// std::cout << "Successfully read " << eventCount << " events from " << filename << std::endl;
-// 	return finalMomenta;
-// }
-
 std::map<std::string, std::vector<LorentzVector>> readMomentaFromDat(
 	const std::vector<std::string> &fileinfo,
 	const std::vector<std::string> &particleNames,
@@ -336,36 +241,6 @@ std::map<std::string, std::vector<LorentzVector>> readMomentaFromDat(
 	return fullMomenta;
 }
 
-// double *readWeightsFromFile(const std::string &filename, int length)
-// {
-// 	std::ifstream file(filename);
-// 	if (!file.is_open())
-// 	{
-// 		std::cerr << "Error: Cannot open file " << filename << std::endl;
-// 		return nullptr;
-// 	}
-
-// 	std::vector<double> weights;
-// 	double weight;
-// 	while (file >> weight)
-// 	{
-// 		weights.push_back(weight);
-// 	}
-
-// 	file.close();
-
-// 	if (length > 0 && weights.size() != static_cast<size_t>(length))
-// 	{
-// 		std::cerr << "Error: Weights size " << weights.size() << " does not match expected length " << length << std::endl;
-// 		// return nullptr;
-// 	}
-// 	// length = weights.size();
-// 	double *d_weights = nullptr;
-// 	cudaMalloc(&d_weights, length * sizeof(double));
-// 	cudaMemcpy(d_weights, weights.data(), length * sizeof(double), cudaMemcpyHostToDevice);
-
-// 	return d_weights;
-// }
 double *readWeightsFromFile(const std::vector<std::string> &fileinfo, int length)
 {
 	// 检查输入参数
