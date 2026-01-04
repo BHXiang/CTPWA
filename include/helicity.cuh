@@ -24,6 +24,11 @@ struct LorentzVector
         return sqrt(E * E - Px * Px - Py * Py - Pz * Pz);
     }
 
+    __device__ __host__ double M2() const
+    {
+        return E * E - Px * Px - Py * Py - Pz * Pz;
+    }
+
     __device__ __host__ double Dot(const LorentzVector &other) const
     {
         return E * other.E - (Px * other.Px + Py * other.Py + Pz * other.Pz);

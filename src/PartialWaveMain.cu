@@ -364,6 +364,45 @@ double *readWeightsFromFile(const std::vector<std::string> &fileinfo, int length
 	return d_weights;
 }
 
+LorentzVector *convertToLorentzVector(const std::map<std::string, std::vector<LorentzVector>> &finalMomenta, const std::map<std::string, int> &particleToIndex)
+{
+	// 获取事件数量和粒子数量
+	int n_events = finalMomenta.begin()->second.size();
+	int n_particles = particleToIndex.size();
+
+	// 在主机端分配所有粒子的四动量数组
+	std::vector<LorentzVector> host_momenta(n_events * n_particles);
+	std::fill(host_momenta.begin(), host_momenta.end(), LorentzVector());
+
+	// 创建粒子计算状态标记
+	std::vector<bool> particle_calculated(n_particles, false);
+
+	// 第一步：将末态粒子的四动量复制到对应位置
+	for (const auto &particle_momenta : finalMomenta)
+	{
+		const std::string &particle_name = particle_momenta.first;
+		const std::vector<LorentzVector> &momenta_vec = particle_momenta.second;
+
+		auto it = particleToIndex.find(particle_name);
+		if (it != particleToIndex.end())
+		{
+			int particle_idx = it->second;
+			for (int event_idx = 0; event_idx < n_events; ++event_idx)
+			{
+				host_momenta[event_idx * n_particles + particle_idx] = momenta_vec[event_idx];
+			}
+			particle_calculated[particle_idx] = true;
+		}
+	}
+
+	// 第二步：将数据复制到设备
+	LorentzVector *d_momenta;
+	cudaMalloc(&d_momenta, host_momenta.size() * sizeof(LorentzVector));
+	cudaMemcpy(d_momenta, host_momenta.data(), host_momenta.size() * sizeof(LorentzVector), cudaMemcpyHostToDevice);
+
+	return d_momenta;
+}
+
 //////////////////////////////////////////////////////////////
 /// NLLFunction 类定义
 ///////////////////////////////////////////////////////////////
@@ -978,8 +1017,8 @@ public:
 		double h_phsp_integral;
 		cudaMemcpy(&h_phsp_integral, d_total_integral, sizeof(double), cudaMemcpyDeviceToHost);
 
-		// 写入文件
-		// std::ofstream outfile(filename);
+		// // 写入文件
+		// std::ofstream outfile("total_weights.dat");
 		// if (outfile.is_open())
 		// {
 		// 	// for (const auto &weight : h_row_results)
@@ -988,11 +1027,11 @@ public:
 		// 		outfile << h_total_results[i] << std::endl;
 		// 	}
 		// 	outfile.close();
-		// 	std::cout << "Weights written to " << filename << std::endl;
+		// 	std::cout << "Weights written to total_weights.dat" << std::endl;
 		// }
 		// else
 		// {
-		// 	std::cerr << "Unable to open file: " << filename << std::endl;
+		// 	std::cerr << "Unable to open file: total_weights.dat" << std::endl;
 		// }
 
 		int dataIntegral = data_length / n_polar_;
@@ -1011,13 +1050,6 @@ public:
 		{
 			TTree *phspTree = new TTree("saved_weight", "fitting result weights");
 
-			// std::map<std::string, TLorentzVector> phsp_vectors;
-			// for (const auto &particle : Vp4_phsp_)
-			// {
-			// 	phsp_vectors[particle.first] = TLorentzVector();
-			// 	phspTree->Branch(particle.first.c_str(), &phsp_vectors[particle.first]);
-			// }
-
 			// 添加权重分支
 			double total_weight;
 			std::vector<double> partial_weights(npartials);
@@ -1033,13 +1065,6 @@ public:
 			// 填充 phsp tree
 			for (int i = 0; i < n_events; ++i)
 			{
-				// // 设置四动量
-				// for (const auto &particle : Vp4_phsp_)
-				// {
-				// 	const auto &lv = particle.second[i];
-				// 	phsp_vectors[particle.first].SetPxPyPzE(lv.Px, lv.Py, lv.Pz, lv.E);
-				// }
-
 				// 设置权重
 				total_weight = h_total_results[i] / h_phsp_integral * static_cast<double>(dataIntegral);
 				// std::cout << "Event " << i << ": Total Weight = " << total_weight << std::endl;
@@ -1154,6 +1179,13 @@ public:
 			ylabel_obj.Write("ylabel");
 		}
 
+		// 四动量index
+		std::map<std::string, int> particleToIndex;
+		for (int i = 0; i < particles_.size(); ++i)
+		{
+			particleToIndex[particles_[i].name] = i;
+		}
+
 		// 计算并保存data直方图
 		if (!Vp4_data_.empty())
 		{
@@ -1164,7 +1196,8 @@ public:
 				masshist_data.emplace_back(hist);
 			}
 
-			CalculateMassHist(Vp4_data_, masshist, nullptr, masshist_data);
+			LorentzVector *device_momenta = convertToLorentzVector(Vp4_data_, particleToIndex);
+			CalculateMassHist(device_momenta, particleToIndex, masshist, nullptr, masshist_data, Vp4_data_.begin()->second.size(), particleToIndex.size());
 			for (size_t i = 0; i < masshist.size(); ++i)
 			{
 				TDirectory *histDir = rootFile->GetDirectory(masshist[i].name.c_str());
@@ -1179,7 +1212,7 @@ public:
 				TH1F *hist = new TH1F(histConfig.name.c_str(), histConfig.title.c_str(), histConfig.bins, histConfig.range[0], histConfig.range[1]);
 				anglehist_data.emplace_back(hist);
 			}
-			CalculateAngleHist(Vp4_data_, anglehist, nullptr, anglehist_data);
+			CalculateAngleHist(device_momenta, particleToIndex, anglehist, nullptr, anglehist_data, Vp4_data_.begin()->second.size(), particleToIndex.size());
 			for (size_t i = 0; i < anglehist.size(); ++i)
 			{
 				TDirectory *histDir = rootFile->GetDirectory(anglehist[i].name.c_str());
@@ -1196,7 +1229,7 @@ public:
 									  histConfig.bins[1], histConfig.range[1][0], histConfig.range[1][1]);
 				dalitzhist_data.emplace_back(hist);
 			}
-			CalculateDalitzHist(Vp4_data_, dalitzhist, nullptr, dalitzhist_data);
+			CalculateDalitzHist(device_momenta, particleToIndex, dalitzhist, nullptr, dalitzhist_data, Vp4_data_.begin()->second.size(), particleToIndex.size());
 			for (size_t i = 0; i < dalitzhist.size(); ++i)
 			{
 				TDirectory *histDir = rootFile->GetDirectory(dalitzhist[i].name.c_str());
@@ -1204,6 +1237,9 @@ public:
 				dalitzhist_data[i]->Write("hdata");
 				delete dalitzhist_data[i];
 			}
+
+			// if (device_momenta != nullptr)
+			cudaFree(device_momenta);
 		}
 
 		// 计算并保存拟合结果直方图
@@ -1216,7 +1252,9 @@ public:
 				masshist_fit.emplace_back(hist);
 			}
 
-			CalculateMassHist(Vp4_phsp_, masshist, h_total_results, masshist_fit);
+			LorentzVector *phsp_momenta = convertToLorentzVector(Vp4_phsp_, particleToIndex);
+			CalculateMassHist(phsp_momenta, particleToIndex, masshist, d_final_result, masshist_fit, Vp4_phsp_.begin()->second.size(), particleToIndex.size());
+			// CalculateMassHist(phsp_momenta, particleToIndex, masshist, h_total_results, masshist_fit, Vp4_phsp_.begin()->second.size(), particleToIndex.size());
 			for (size_t i = 0; i < masshist.size(); ++i)
 			{
 				TDirectory *histDir = rootFile->GetDirectory(masshist[i].name.c_str());
@@ -1234,7 +1272,7 @@ public:
 				TH1F *hist = new TH1F(histConfig.name.c_str(), histConfig.title.c_str(), histConfig.bins, histConfig.range[0], histConfig.range[1]);
 				anglehist_fit.emplace_back(hist);
 			}
-			CalculateAngleHist(Vp4_phsp_, anglehist, h_total_results, anglehist_fit);
+			CalculateAngleHist(phsp_momenta, particleToIndex, anglehist, d_final_result, anglehist_fit, Vp4_phsp_.begin()->second.size(), particleToIndex.size());
 			for (size_t i = 0; i < anglehist.size(); ++i)
 			{
 				TDirectory *histDir = rootFile->GetDirectory(anglehist[i].name.c_str());
@@ -1253,7 +1291,7 @@ public:
 									  histConfig.bins[1], histConfig.range[1][0], histConfig.range[1][1]);
 				dalitzhist_fit.emplace_back(hist);
 			}
-			CalculateDalitzHist(Vp4_phsp_, dalitzhist, h_total_results, dalitzhist_fit);
+			CalculateDalitzHist(phsp_momenta, particleToIndex, dalitzhist, d_final_result, dalitzhist_fit, Vp4_phsp_.begin()->second.size(), particleToIndex.size());
 			for (size_t i = 0; i < dalitzhist.size(); ++i)
 			{
 				TDirectory *histDir = rootFile->GetDirectory(dalitzhist[i].name.c_str());
@@ -1263,6 +1301,8 @@ public:
 				hist->Write("hfit");
 				delete dalitzhist_fit[i];
 			}
+
+			cudaFree(phsp_momenta);
 		}
 
 		// 计算并保存本底直方图
@@ -1275,7 +1315,8 @@ public:
 				masshist_bkg.emplace_back(hist);
 			}
 
-			CalculateMassHist(Vp4_bkg_, masshist, nullptr, masshist_bkg);
+			LorentzVector *device_momenta = convertToLorentzVector(Vp4_bkg_, particleToIndex);
+			CalculateMassHist(device_momenta, particleToIndex, masshist, bkg_weights_, masshist_bkg, Vp4_bkg_.begin()->second.size(), particleToIndex.size());
 			for (size_t i = 0; i < masshist.size(); ++i)
 			{
 				TDirectory *histDir = rootFile->GetDirectory(masshist[i].name.c_str());
@@ -1290,7 +1331,7 @@ public:
 				TH1F *hist = new TH1F(histConfig.name.c_str(), histConfig.title.c_str(), histConfig.bins, histConfig.range[0], histConfig.range[1]);
 				anglehist_bkg.emplace_back(hist);
 			}
-			CalculateAngleHist(Vp4_bkg_, anglehist, nullptr, anglehist_bkg);
+			CalculateAngleHist(device_momenta, particleToIndex, anglehist, bkg_weights_, anglehist_bkg, Vp4_bkg_.begin()->second.size(), particleToIndex.size());
 			for (size_t i = 0; i < anglehist.size(); ++i)
 			{
 				TDirectory *histDir = rootFile->GetDirectory(anglehist[i].name.c_str());
@@ -1307,7 +1348,7 @@ public:
 									  histConfig.bins[1], histConfig.range[1][0], histConfig.range[1][1]);
 				dalitzhist_bkg.emplace_back(hist);
 			}
-			CalculateDalitzHist(Vp4_bkg_, dalitzhist, nullptr, dalitzhist_bkg);
+			CalculateDalitzHist(device_momenta, particleToIndex, dalitzhist, bkg_weights_, dalitzhist_bkg, Vp4_bkg_.begin()->second.size(), particleToIndex.size());
 			for (size_t i = 0; i < dalitzhist.size(); ++i)
 			{
 				TDirectory *histDir = rootFile->GetDirectory(dalitzhist[i].name.c_str());
@@ -1315,11 +1356,14 @@ public:
 				dalitzhist_bkg[i]->Write("hbkg");
 				delete dalitzhist_bkg[i];
 			}
+
+			cudaFree(device_momenta);
 		}
 
 		//
 		if (!Vp4_phsp_.empty())
 		{
+			LorentzVector *device_momenta = convertToLorentzVector(Vp4_phsp_, particleToIndex);
 			for (int i = 0; i < npartials; ++i)
 			{
 				// 为当前部分创建直方图
@@ -1331,7 +1375,7 @@ public:
 					masshist_partial.push_back(hist);
 				}
 
-				CalculateMassHist(Vp4_phsp_, masshist, &h_partial_results[i * n_events], masshist_partial);
+				CalculateMassHist(device_momenta, particleToIndex, masshist, &d_partial_result[i * n_events], masshist_partial, Vp4_phsp_.begin()->second.size(), particleToIndex.size());
 				for (size_t j = 0; j < masshist_partial.size(); ++j)
 				{
 
@@ -1355,7 +1399,7 @@ public:
 					TH1F *hist = new TH1F(histConfig.name.c_str(), histConfig.title.c_str(), histConfig.bins, histConfig.range[0], histConfig.range[1]);
 					anglehist_partial.push_back(hist);
 				}
-				CalculateAngleHist(Vp4_phsp_, anglehist, &h_partial_results[i * n_events], anglehist_partial);
+				CalculateAngleHist(device_momenta, particleToIndex, anglehist, &d_partial_result[i * n_events], anglehist_partial, Vp4_phsp_.begin()->second.size(), particleToIndex.size());
 				for (size_t j = 0; j < anglehist_partial.size(); ++j)
 				{
 					TDirectory *histDir = rootFile->GetDirectory(anglehist[j].name.c_str());
@@ -1370,6 +1414,7 @@ public:
 				}
 				anglehist_partial.clear();
 			}
+			cudaFree(device_momenta);
 		}
 
 		// 关闭 ROOT 文件

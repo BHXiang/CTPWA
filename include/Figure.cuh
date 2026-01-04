@@ -2,6 +2,7 @@
 #define FIGURE_CUH
 
 #include <helicity.cuh>
+#include <AmpGen.cuh>
 
 #include <vector>
 #include <map>
@@ -10,6 +11,20 @@
 #include <TH2F.h>
 #include <TROOT.h>
 #include <TLorentzVector.h>
+
+// thrust
+#include <thrust/device_vector.h>
+#include <thrust/host_vector.h>
+#include <thrust/transform.h>
+#include <thrust/sequence.h>
+#include <thrust/sort.h>
+#include <thrust/reduce.h>
+#include <thrust/remove.h>
+#include <thrust/execution_policy.h>
+#include <thrust/iterator/constant_iterator.h>
+#include <thrust/binary_search.h>
+#include <thrust/functional.h>
+#include <thrust/count.h>
 
 // 直方图配置结构体（包含直方图对象）
 struct MassHistConfig
@@ -57,8 +72,8 @@ struct DalitzHistConfig
         : name(n), title(t), particles(p), bins(b), range(r), tex(te) {}
 };
 
-void CalculateMassHist(std::map<std::string, std::vector<LorentzVector>> &momenta, std::vector<MassHistConfig> &histConfigs, double *weight, std::vector<TH1F *> &outputHistograms);
-void CalculateAngleHist(std::map<std::string, std::vector<LorentzVector>> &momenta, std::vector<AngleHistConfig> &histConfigs, double *weight, std::vector<TH1F *> &outputHistograms);
-void CalculateDalitzHist(std::map<std::string, std::vector<LorentzVector>> &momenta, std::vector<DalitzHistConfig> &histConfigs, double *weight, std::vector<TH2F *> &outputHistograms);
+void CalculateMassHist(LorentzVector *device_momenta, const std::map<std::string, int> &particleToIndex, const std::vector<MassHistConfig> &histConfigs, double *weights, std::vector<TH1F *> &outputHistograms, int nEvents, int nParticles);
+void CalculateAngleHist(LorentzVector *device_momenta, const std::map<std::string, int> &particleToIndex, const std::vector<AngleHistConfig> &histConfigs, double *weights, std::vector<TH1F *> &outputHistograms, int nEvents, int nParticles);
+void CalculateDalitzHist(LorentzVector *device_momenta, const std::map<std::string, int> &particleToIndex, const std::vector<DalitzHistConfig> &histConfigs, double *weights, std::vector<TH2F *> &outputHistograms, int nEvents, int nParticles);
 
 #endif // FIGURE_CUH

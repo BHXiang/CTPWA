@@ -99,6 +99,7 @@ extension = CUDAExtension(
             '--extended-lambda',
             '--generate-line-info',
             '-D_FORCE_INLINES',
+            '--extended-lambda',
             # 如果遇到内存对齐问题，可以添加
             # '--ptxas-options=-v',
             # '--maxrregcount=32',
