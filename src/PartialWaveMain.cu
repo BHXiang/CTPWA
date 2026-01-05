@@ -977,7 +977,7 @@ public:
 		}
 
 		// 输出 extended_vector 内容用于调试
-		// std::cout << "Extended vector: " << extended_vector.cpu() << std::endl;
+		// std::cout << "Extended vector: " << torch::real(extended_vector).cpu() << " " << torch::imag(extended_vector).cpu() << std::endl;
 
 		////////////////////////////////////////////////////////////////////////////
 		// std::cout << "Extended vector: " << extended_vector.cpu() << std::endl;

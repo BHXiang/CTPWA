@@ -17,7 +17,9 @@ struct MassCalculator
             int particle_idx = particle_indices[i];
             const LorentzVector &p = momenta[event_idx * total_particles + particle_idx];
             total = total + p;
+            // printf("Event %d: Adding particle %d with (%f, %f, %f, %f)\n", event_idx, particle_idx, p.E, p.Px, p.Py, p.Pz); // Debug line
         }
+        // printf("Event %d: Invariant Mass = %f\n", event_idx, total.M()); // Debug line
         return total.M();
     }
 };
@@ -137,7 +139,7 @@ void CalculateMassHist(
 
         if (weights != nullptr)
         {
-            // 使用transform计算bin索引
+            // 1. 计算每个质量值对应的bin索引
             thrust::device_vector<int> bin_indices(nEvents);
 
             thrust::transform(
@@ -151,65 +153,80 @@ void CalculateMassHist(
                         return -1;
                     }
                     int idx = static_cast<int>((mass - min_bin) / bin_width);
-                    // 处理刚好等于max_bin的情况（概率很小）
                     if (idx >= n_bins)
                         idx = n_bins - 1;
                     return idx;
                 });
 
-            // 使用zip迭代器将bin索引和权重组合
+            // 2. 创建配对迭代器（bin索引 + 权重）
             auto zipped_begin = thrust::make_zip_iterator(
                 thrust::make_tuple(bin_indices.begin(), device_weights.begin()));
             auto zipped_end = thrust::make_zip_iterator(
                 thrust::make_tuple(bin_indices.end(), device_weights.end()));
 
-            // 移除无效的（bin索引为-1的）
-            auto new_end = thrust::remove_if(
+            // 3. 创建临时向量存放有效的配对
+            thrust::device_vector<thrust::tuple<int, double>> valid_pairs(nEvents);
+
+            // 4. 复制有效的配对（bin索引不为-1）
+            auto new_end = thrust::copy_if(
                 zipped_begin,
                 zipped_end,
+                valid_pairs.begin(),
                 [=] __device__(const thrust::tuple<int, double> &t) -> bool
                 {
-                    return thrust::get<0>(t) < 0;
+                    return thrust::get<0>(t) >= 0;
                 });
 
-            // 计算有效数量
-            size_t valid_count = thrust::distance(zipped_begin, new_end);
+            size_t valid_count = thrust::distance(valid_pairs.begin(), new_end);
 
-            // 分离有效的bin索引和权重
-            thrust::device_vector<int> valid_bins(valid_count);
-            thrust::device_vector<double> valid_weights(valid_count);
-
-            thrust::transform(
-                zipped_begin, new_end,
-                thrust::make_zip_iterator(thrust::make_tuple(
-                    valid_bins.begin(), valid_weights.begin())),
-                [=] __device__(const thrust::tuple<int, double> &t)
-                {
-                    return t;
-                });
-
-            // 按bin索引排序
-            thrust::sort_by_key(valid_bins.begin(), valid_bins.end(), valid_weights.begin());
-
-            // 使用reduce_by_key累加权重
-            thrust::device_vector<int> unique_bins(n_bins);
-            thrust::device_vector<double> bin_sums(n_bins);
-
-            auto result = thrust::reduce_by_key(
-                valid_bins.begin(), valid_bins.end(),
-                valid_weights.begin(),
-                unique_bins.begin(),
-                bin_sums.begin());
-
-            size_t num_unique = thrust::distance(unique_bins.begin(), result.first);
-
-            // 填充结果
-            for (size_t i = 0; i < num_unique; ++i)
+            if (valid_count > 0)
             {
-                int bin = unique_bins[i];
-                if (bin >= 0 && bin < n_bins)
+                // 5. 按bin索引排序
+                thrust::sort(
+                    valid_pairs.begin(),
+                    valid_pairs.begin() + valid_count,
+                    [] __device__(const thrust::tuple<int, double> &a,
+                                  const thrust::tuple<int, double> &b) -> bool
+                    {
+                        return thrust::get<0>(a) < thrust::get<0>(b);
+                    });
+
+                // 6. 使用reduce_by_key累加权重
+                thrust::device_vector<int> unique_bins(n_bins);
+                thrust::device_vector<double> bin_sums(n_bins);
+
+                // 创建键和值的转换器
+                auto keys_begin = thrust::make_transform_iterator(
+                    valid_pairs.begin(),
+                    [] __device__(const thrust::tuple<int, double> &t) -> int
+                    {
+                        return thrust::get<0>(t);
+                    });
+
+                auto values_begin = thrust::make_transform_iterator(
+                    valid_pairs.begin(),
+                    [] __device__(const thrust::tuple<int, double> &t) -> double
+                    {
+                        return thrust::get<1>(t);
+                    });
+
+                auto result = thrust::reduce_by_key(
+                    keys_begin,
+                    keys_begin + valid_count,
+                    values_begin,
+                    unique_bins.begin(),
+                    bin_sums.begin());
+
+                size_t num_unique = thrust::distance(unique_bins.begin(), result.first);
+
+                // 7. 填充结果
+                for (size_t i = 0; i < num_unique; ++i)
                 {
-                    bin_counts[bin] = bin_sums[i];
+                    int bin = unique_bins[i];
+                    if (bin >= 0 && bin < n_bins)
+                    {
+                        bin_counts[bin] = bin_sums[i];
+                    }
                 }
             }
         }
@@ -379,8 +396,6 @@ void CalculateAngleHist(
     thrust::device_vector<double> device_weights;
     if (weights != nullptr)
     {
-        // thrust::host_vector<double> host_weights(weights, weights + nEvents);
-        // device_weights = host_weights;
         device_weights = thrust::device_vector<double>(weights, weights + nEvents);
     }
 
@@ -455,7 +470,6 @@ void CalculateAngleHist(
         thrust::device_vector<double> device_angles(nEvents);
 
         // 获取设备原始指针
-        // LorentzVector *d_momenta_ptr = h_momenta.momenta;
         int *d_indices_ptr = thrust::raw_pointer_cast(device_particle_indices.data());
         int *d_group_sizes_ptr = thrust::raw_pointer_cast(device_group_sizes.data());
 
@@ -486,88 +500,75 @@ void CalculateAngleHist(
 
         if (weights != nullptr)
         {
-            // 有权重的情况
+            // 使用transform计算bin索引
             thrust::device_vector<int> bin_indices(nEvents);
 
-            // 使用lower_bound找到每个角度值对应的bin索引
-            thrust::lower_bound(
-                bin_edges.begin(),
-                bin_edges.end() - 1, // 排除最后一个边界
+            thrust::transform(
                 device_angles.begin(),
                 device_angles.end(),
-                bin_indices.begin());
-
-            // 调整索引（从0开始，并且处理超出范围的情况）
-            thrust::transform(
                 bin_indices.begin(),
-                bin_indices.end(),
-                device_angles.begin(),
-                bin_indices.begin(),
-                [=] __device__(int idx, double angle) -> int
+                [=] __device__(double angle) -> int
                 {
-                    if (angle < min_bin || angle >= max_bin)
+                    // 关键修改：这里应该使用和下面无权重部分相同的逻辑
+                    if (angle < min_bin || angle >= max_bin) // 注意这里是 >=，不是 >
                     {
-                        return -1; // 超出范围
+                        return -1;
                     }
-                    return idx; // idx已经是正确的bin索引
+                    int idx = static_cast<int>((angle - min_bin) / bin_width);
+                    // 处理刚好等于max_bin的情况（由于浮点精度可能发生）
+                    if (idx >= n_bins)
+                        idx = n_bins - 1;
+                    return idx;
                 });
 
-            // 使用reduce_by_key来累加权重
-            // 首先需要排序bin_indices以便使用reduce_by_key
-            thrust::device_vector<int> sorted_bin_indices = bin_indices;
-            thrust::device_vector<double> event_weights = device_weights;
+            // 使用zip迭代器将bin索引和权重组合
+            auto zipped_begin = thrust::make_zip_iterator(
+                thrust::make_tuple(bin_indices.begin(), device_weights.begin()));
+            auto zipped_end = thrust::make_zip_iterator(
+                thrust::make_tuple(bin_indices.end(), device_weights.end()));
+
+            // 移除无效的（bin索引为-1的）
+            auto new_end = thrust::remove_if(
+                zipped_begin,
+                zipped_end,
+                [=] __device__(const thrust::tuple<int, double> &t) -> bool
+                {
+                    return thrust::get<0>(t) < 0;
+                });
+
+            // 计算有效数量
+            size_t valid_count = thrust::distance(zipped_begin, new_end);
+
+            // 分离有效的bin索引和权重
+            thrust::device_vector<int> valid_bins(valid_count);
+            thrust::device_vector<double> valid_weights(valid_count);
+
+            thrust::transform(
+                zipped_begin, new_end,
+                thrust::make_zip_iterator(thrust::make_tuple(
+                    valid_bins.begin(), valid_weights.begin())),
+                [=] __device__(const thrust::tuple<int, double> &t)
+                {
+                    return t;
+                });
 
             // 按bin索引排序
-            thrust::sort_by_key(sorted_bin_indices.begin(), sorted_bin_indices.end(), event_weights.begin());
+            thrust::sort_by_key(valid_bins.begin(), valid_bins.end(), valid_weights.begin());
 
-            // 移除超出范围的事件
-            // 首先计算有效事件数
-            size_t valid_count = thrust::count_if(
-                sorted_bin_indices.begin(),
-                sorted_bin_indices.end(),
-                [] __device__(int idx) -> bool
-                {
-                    return idx >= 0;
-                });
-
-            // 将有效元素移动到序列开头
-            auto new_end_indices = thrust::remove_if(
-                sorted_bin_indices.begin(),
-                sorted_bin_indices.end(),
-                [] __device__(int idx) -> bool
-                {
-                    return idx < 0;
-                });
-
-            auto new_end_weights = thrust::remove_if(
-                event_weights.begin(),
-                event_weights.end(),
-                sorted_bin_indices.begin(),
-                [] __device__(int idx) -> bool
-                {
-                    return idx < 0;
-                });
-
-            // 调整大小以仅包含有效元素
-            sorted_bin_indices.resize(valid_count);
-            event_weights.resize(valid_count);
-
-            // 分配临时数组用于reduce_by_key
+            // 使用reduce_by_key累加权重
             thrust::device_vector<int> unique_bins(n_bins);
             thrust::device_vector<double> bin_sums(n_bins);
 
-            // 对相同bin的事件权重求和
-            thrust::pair<thrust::device_vector<int>::iterator, thrust::device_vector<double>::iterator> new_end_pair;
-            new_end_pair = thrust::reduce_by_key(
-                sorted_bin_indices.begin(),
-                sorted_bin_indices.begin() + valid_count,
-                event_weights.begin(),
+            auto result = thrust::reduce_by_key(
+                valid_bins.begin(), valid_bins.end(),
+                valid_weights.begin(),
                 unique_bins.begin(),
                 bin_sums.begin());
 
-            // 将结果复制回bin_counts
-            size_t num_unique_bins = thrust::distance(unique_bins.begin(), new_end_pair.first);
-            for (size_t i = 0; i < num_unique_bins; ++i)
+            size_t num_unique = thrust::distance(unique_bins.begin(), result.first);
+
+            // 填充结果
+            for (size_t i = 0; i < num_unique; ++i)
             {
                 int bin = unique_bins[i];
                 if (bin >= 0 && bin < n_bins)
@@ -581,19 +582,22 @@ void CalculateAngleHist(
             // 无权重的情况（更简单，使用直方图）
             thrust::device_vector<int> bin_indices(nEvents);
 
-            // 计算每个角度值对应的bin索引
+            // 计算每个角度值对应的bin索引 - 使用和有权重部分相同的逻辑
             thrust::transform(
                 device_angles.begin(),
                 device_angles.end(),
                 bin_indices.begin(),
                 [=] __device__(double angle) -> int
                 {
-                    if (angle < min_bin || angle >= max_bin)
+                    if (angle < min_bin || angle >= max_bin) // 注意这里是 >=
                     {
                         return -1;
                     }
                     int idx = static_cast<int>((angle - min_bin) / bin_width);
-                    return (idx < n_bins) ? idx : n_bins - 1;
+                    // 处理刚好等于max_bin的情况（由于浮点精度可能发生）
+                    if (idx >= n_bins)
+                        idx = n_bins - 1;
+                    return idx;
                 });
 
             // 移除超出范围的事件
@@ -636,14 +640,11 @@ void CalculateAngleHist(
         thrust::host_vector<double> host_bin_counts = bin_counts;
         for (int bin = 0; bin < n_bins; ++bin)
         {
-            // std::cout << "Bin " << bin << ": Count = " << host_bin_counts[bin] << std::endl;
             hist->SetBinContent(bin + 1, host_bin_counts[bin]);
         }
 
         // 3.7 设置正确的直方图范围
         hist->SetBins(n_bins, min_bin, max_bin);
-
-        // std::cout << "Processed helicity config " << configIdx << " with " << nEvents << " events" << std::endl;
     }
 }
 
