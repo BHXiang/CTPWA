@@ -607,7 +607,6 @@ public:
 	// 	constraints_initialized_ = false;
 	// }
 
-private:
 	static torch::Tensor extendVectorWithConstraints(const torch::Tensor &vector,
 													 const torch::Device &device)
 	{
@@ -723,6 +722,7 @@ private:
 		return extended_vector;
 	}
 
+private:
 	static torch::Tensor mergeGradientsWithConstraints(
 		const torch::Tensor &extended_grad,
 		int original_size)
@@ -882,99 +882,100 @@ public:
 		// const int target_dev = vector.get_device();
 		torch::Device dev(torch::kCUDA, vector.get_device());
 
-		for (const auto &vecid : con_trans_id_)
-		{
-			if (!vecid.empty())
-			{
-				auto max_it = std::max_element(vecid.begin(), vecid.end());
-				extended_size = std::max(extended_size, *max_it + 1);
-			}
-		}
+		torch::Tensor extended_vector = NLLFunction::extendVectorWithConstraints(vector, dev);
 
-		torch::TensorOptions options = torch::TensorOptions().dtype(torch::kComplexFloat).device(dev);
+		// for (const auto &vecid : con_trans_id_)
+		// {
+		// 	if (!vecid.empty())
+		// 	{
+		// 		auto max_it = std::max_element(vecid.begin(), vecid.end());
+		// 		extended_size = std::max(extended_size, *max_it + 1);
+		// 	}
+		// }
 
-		torch::Tensor extended_vector = torch::zeros({extended_size}, options);
+		// torch::TensorOptions options = torch::TensorOptions().dtype(torch::kComplexFloat).device(dev);
 
-		// 方法1：使用 PyTorch 的索引操作（在 GPU 上）
+		// torch::Tensor extended_vector = torch::zeros({extended_size}, options);
+
 		// 创建索引，选择原始部分
-		torch::Tensor indices = torch::arange(0, original_size, torch::kLong).to(dev);
-		extended_vector.index_copy_(0, indices, vector);
+		// torch::Tensor indices = torch::arange(0, original_size, torch::kLong).to(dev);
+		// extended_vector.index_copy_(0, indices, vector);
 
-		// 在 GPU 上处理约束
-		for (size_t i = 0; i < con_trans_id_.size(); ++i)
-		{
-			const auto &vecid = con_trans_id_[i];
-			const auto &values = con_trans_values_[i];
+		// // 在 GPU 上处理约束
+		// for (size_t i = 0; i < con_trans_id_.size(); ++i)
+		// {
+		// 	const auto &vecid = con_trans_id_[i];
+		// 	const auto &values = con_trans_values_[i];
 
-			if (vecid.empty() || values.empty() || vecid.size() != values.size())
-			{
-				continue;
-			}
+		// 	if (vecid.empty() || values.empty() || vecid.size() != values.size())
+		// 	{
+		// 		continue;
+		// 	}
 
-			// 找到原始ID（最小值）
-			auto min_it = std::min_element(vecid.begin(), vecid.end());
-			int origin_idx = std::distance(vecid.begin(), min_it);
-			int origin_id = vecid[origin_idx];
+		// 	// 找到原始ID（最小值）
+		// 	auto min_it = std::min_element(vecid.begin(), vecid.end());
+		// 	int origin_idx = std::distance(vecid.begin(), min_it);
+		// 	int origin_id = vecid[origin_idx];
 
-			// 确保原始ID有效
-			if (origin_id < 0 || origin_id >= original_size)
-			{
-				continue;
-			}
+		// 	// 确保原始ID有效
+		// 	if (origin_id < 0 || origin_id >= original_size)
+		// 	{
+		// 		continue;
+		// 	}
 
-			// 获取原始ID对应的系数
-			std::complex<double> origin_coeff = values[origin_idx];
-			double origin_coeff_real = std::real(origin_coeff);
-			double origin_coeff_imag = std::imag(origin_coeff);
+		// 	// 获取原始ID对应的系数
+		// 	std::complex<double> origin_coeff = values[origin_idx];
+		// 	double origin_coeff_real = std::real(origin_coeff);
+		// 	double origin_coeff_imag = std::imag(origin_coeff);
 
-			// 检查分母不为零
-			if (std::abs(origin_coeff_real) < 1e-10 || std::abs(origin_coeff_imag) < 1e-10)
-			{
-				std::cerr << "Warning: origin coefficient too small, skipping constraint group " << i << std::endl;
-				continue;
-			}
+		// 	// 检查分母不为零
+		// 	if (std::abs(origin_coeff_real) < 1e-10 || std::abs(origin_coeff_imag) < 1e-10)
+		// 	{
+		// 		std::cerr << "Warning: origin coefficient too small, skipping constraint group " << i << std::endl;
+		// 		continue;
+		// 	}
 
-			// 为每个扩展ID设置值
-			for (size_t j = 0; j < vecid.size(); ++j)
-			{
-				if (j == origin_idx)
-					continue; // 跳过原始ID
+		// 	// 为每个扩展ID设置值
+		// 	for (size_t j = 0; j < vecid.size(); ++j)
+		// 	{
+		// 		if (j == origin_idx)
+		// 			continue; // 跳过原始ID
 
-				int extended_id = vecid[j];
+		// 		int extended_id = vecid[j];
 
-				// 确保扩展ID有效且不超过values数组的大小
-				if (extended_id >= 0 && extended_id < extended_size && j < values.size())
-				{
-					std::complex<double> ext_coeff = values[j];
-					double ext_coeff_real = std::real(ext_coeff);
-					double ext_coeff_imag = std::imag(ext_coeff);
+		// 		// 确保扩展ID有效且不超过values数组的大小
+		// 		if (extended_id >= 0 && extended_id < extended_size && j < values.size())
+		// 		{
+		// 			std::complex<double> ext_coeff = values[j];
+		// 			double ext_coeff_real = std::real(ext_coeff);
+		// 			double ext_coeff_imag = std::imag(ext_coeff);
 
-					// 计算系数比例（直接在 GPU 上）
-					float real_ratio = static_cast<float>(ext_coeff_real / origin_coeff_real);
-					float imag_ratio = static_cast<float>(ext_coeff_imag / origin_coeff_imag);
+		// 			// 计算系数比例（直接在 GPU 上）
+		// 			float real_ratio = static_cast<float>(ext_coeff_real / origin_coeff_real);
+		// 			float imag_ratio = static_cast<float>(ext_coeff_imag / origin_coeff_imag);
 
-					// 在 GPU 上执行线性变换
-					// extended_vector[extended_id] = real_ratio * real_part + imag_ratio * imag_part
+		// 			// 在 GPU 上执行线性变换
+		// 			// extended_vector[extended_id] = real_ratio * real_part + imag_ratio * imag_part
 
-					// 获取原始向量的值
-					torch::Tensor origin_value = vector[origin_id];
+		// 			// 获取原始向量的值
+		// 			torch::Tensor origin_value = vector[origin_id];
 
-					// 计算实部和虚部
-					torch::Tensor real_part = (origin_value + torch::conj(origin_value)) / 2.0f;
-					torch::Tensor imag_part = (origin_value - torch::conj(origin_value)) / (2.0f * c10::complex<float>(0, 1));
+		// 			// 计算实部和虚部
+		// 			torch::Tensor real_part = (origin_value + torch::conj(origin_value)) / 2.0f;
+		// 			torch::Tensor imag_part = (origin_value - torch::conj(origin_value)) / (2.0f * c10::complex<float>(0, 1));
 
-					// 计算扩展值
-					torch::Tensor extended_real = real_ratio * real_part;
-					torch::Tensor extended_imag = imag_ratio * imag_part;
+		// 			// 计算扩展值
+		// 			torch::Tensor extended_real = real_ratio * real_part;
+		// 			torch::Tensor extended_imag = imag_ratio * imag_part;
 
-					// 合并实部和虚部
-					torch::Tensor extended_value = extended_real + c10::complex<float>(0, 1) * extended_imag;
+		// 			// 合并实部和虚部
+		// 			torch::Tensor extended_value = extended_real + c10::complex<float>(0, 1) * extended_imag;
 
-					// 赋值
-					extended_vector[extended_id] = extended_value;
-				}
-			}
-		}
+		// 			// 赋值
+		// 			extended_vector[extended_id] = extended_value;
+		// 		}
+		// 	}
+		// }
 
 		// 输出 extended_vector 内容用于调试
 		// std::cout << "Extended vector: " << torch::real(extended_vector).cpu() << " " << torch::imag(extended_vector).cpu() << std::endl;

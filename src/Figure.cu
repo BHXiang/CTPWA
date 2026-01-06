@@ -1,38 +1,72 @@
 #include <Figure.cuh>
 #include <helicity.cuh>
 
-// 质量计算
-struct MassCalculator
+// CUDA核函数：填充直方图（有权重）
+__global__ void fillHistogramKernel(
+    const double *values,
+    const double *weights,
+    int n_events,
+    double *hist_bins,
+    int n_bins,
+    double min_bin,
+    double max_bin,
+    double bin_width)
 {
-    const LorentzVector *momenta;
-    const int *particle_indices;
-    int n_particles;
-    int total_particles;
+    int event_idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-    __host__ __device__ double operator()(int event_idx) const
+    if (event_idx < n_events)
+    {
+        double value = values[event_idx];
+        double weight = 1.0;
+        if (weights != nullptr)
+            weight = weights[event_idx];
+
+        if (value >= min_bin && value < max_bin)
+        {
+            int bin_idx = static_cast<int>((value - min_bin) / bin_width);
+            if (bin_idx < 0)
+                bin_idx = 0;
+            if (bin_idx >= n_bins)
+                bin_idx = n_bins - 1;
+
+            // 使用原子操作确保线程安全
+            atomicAdd(&hist_bins[bin_idx], weight);
+        }
+    }
+}
+
+// CUDA核函数：计算每个事件的质量
+__global__ void MassCalculator(
+    const LorentzVector *momenta,
+    const int *particle_indices,
+    int n_particles_in_config,
+    int total_particles,
+    int n_events,
+    double *masses)
+{
+    int event_idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (event_idx < n_events)
     {
         LorentzVector total;
-        for (int i = 0; i < n_particles; ++i)
+        for (int i = 0; i < n_particles_in_config; ++i)
         {
             int particle_idx = particle_indices[i];
             const LorentzVector &p = momenta[event_idx * total_particles + particle_idx];
             total = total + p;
-            // printf("Event %d: Adding particle %d with (%f, %f, %f, %f)\n", event_idx, particle_idx, p.E, p.Px, p.Py, p.Pz); // Debug line
         }
-        // printf("Event %d: Invariant Mass = %f\n", event_idx, total.M()); // Debug line
-        return total.M();
+        masses[event_idx] = total.M();
     }
-};
+}
 
 void CalculateMassHist(
     LorentzVector *device_momenta,
     const std::map<std::string, int> &particleToIndex,
     const std::vector<MassHistConfig> &histConfigs,
-    double *weights,
+    double *device_weights,
     std::vector<TH1F *> &outputHistograms,
     int nEvents, int nParticles)
 {
-    // 1. 检查输入
     if (outputHistograms.size() != histConfigs.size())
     {
         std::cerr << "Error: outputHistograms size (" << outputHistograms.size()
@@ -46,16 +80,10 @@ void CalculateMassHist(
         return;
     }
 
-    // 2. 复制权重到设备（如果有的话）
-    thrust::device_vector<double> device_weights;
-    if (weights != nullptr)
-    {
-        // thrust::host_vector<double> host_weights(weights, weights + nEvents);
-        // device_weights = host_weights;
-        device_weights = thrust::device_vector<double>(weights, weights + nEvents);
-    }
+    // CUDA配置
+    int blockSize = 256;
+    int gridSize = (nEvents + blockSize - 1) / blockSize;
 
-    // 3. 对每个直方图配置进行处理
     for (size_t configIdx = 0; configIdx < histConfigs.size(); ++configIdx)
     {
         const auto &config = histConfigs[configIdx];
@@ -69,7 +97,7 @@ void CalculateMassHist(
 
         hist->Reset();
 
-        // 3.1 获取该配置需要的粒子索引
+        // 获取粒子索引
         std::vector<int> particleIndices;
         for (const auto &particleName : config.particles)
         {
@@ -90,7 +118,6 @@ void CalculateMassHist(
             continue;
         }
 
-        // 检查range大小
         if (config.range.size() < 2)
         {
             std::cerr << "Error: Config " << configIdx << " range size < 2!" << std::endl;
@@ -102,283 +129,113 @@ void CalculateMassHist(
         int n_bins = config.bins;
         double bin_width = (max_bin - min_bin) / n_bins;
 
-        // 3.2 将粒子索引复制到设备
-        thrust::device_vector<int> device_particle_indices = particleIndices;
-        int nParticlesInConfig = particleIndices.size();
+        // 在设备上分配粒子索引数组
+        int *device_particle_indices;
+        cudaMalloc(&device_particle_indices, particleIndices.size() * sizeof(int));
+        cudaMemcpy(device_particle_indices, particleIndices.data(),
+                   particleIndices.size() * sizeof(int), cudaMemcpyHostToDevice);
 
-        // 3.3 为每个事件计算不变质量（使用Thrust transform）
-        thrust::device_vector<double> device_masses(nEvents);
+        // 步骤1：计算所有事件的质量
+        double *device_masses;
+        cudaMalloc(&device_masses, nEvents * sizeof(double));
 
-        // 获取设备原始指针
-        int *d_indices_ptr = thrust::raw_pointer_cast(device_particle_indices.data());
+        MassCalculator<<<gridSize, blockSize>>>(device_momenta, device_particle_indices, particleIndices.size(), nParticles, nEvents, device_masses);
+        cudaDeviceSynchronize();
 
-        // 创建索引序列 [0, 1, 2, ..., nEvents-1]
-        thrust::device_vector<int> event_indices(nEvents);
-        thrust::sequence(event_indices.begin(), event_indices.end(), 0);
+        // 步骤2：填充直方图
+        double *device_hist_bins;
+        cudaMalloc(&device_hist_bins, n_bins * sizeof(double));
+        cudaMemset(device_hist_bins, 0, n_bins * sizeof(double));
 
-        // 计算所有事件的质量
-        thrust::transform(
-            event_indices.begin(),
-            event_indices.end(),
-            device_masses.begin(),
-            MassCalculator{
-                device_momenta,
-                d_indices_ptr,
-                nParticlesInConfig,
-                nParticles});
+        fillHistogramKernel<<<gridSize, blockSize>>>(device_masses, device_weights, nEvents, device_hist_bins, n_bins, min_bin, max_bin, bin_width);
+        cudaDeviceSynchronize();
 
-        // 3.4 创建直方图bin边界
-        thrust::device_vector<double> bin_edges(n_bins + 1);
-        for (int i = 0; i <= n_bins; ++i)
-        {
-            bin_edges[i] = min_bin + i * bin_width;
-        }
+        // 步骤3：将直方图结果复制回主机
+        std::vector<double> host_bin_counts(n_bins, 0.0);
+        cudaMemcpy(host_bin_counts.data(), device_hist_bins,
+                   n_bins * sizeof(double), cudaMemcpyDeviceToHost);
 
-        // 3.5 将质量分配到bins中（使用权重）
-        thrust::device_vector<double> bin_counts(n_bins, 0.0);
-
-        if (weights != nullptr)
-        {
-            // 1. 计算每个质量值对应的bin索引
-            thrust::device_vector<int> bin_indices(nEvents);
-
-            thrust::transform(
-                device_masses.begin(),
-                device_masses.end(),
-                bin_indices.begin(),
-                [=] __device__(double mass) -> int
-                {
-                    if (mass < min_bin || mass >= max_bin)
-                    {
-                        return -1;
-                    }
-                    int idx = static_cast<int>((mass - min_bin) / bin_width);
-                    if (idx >= n_bins)
-                        idx = n_bins - 1;
-                    return idx;
-                });
-
-            // 2. 创建配对迭代器（bin索引 + 权重）
-            auto zipped_begin = thrust::make_zip_iterator(
-                thrust::make_tuple(bin_indices.begin(), device_weights.begin()));
-            auto zipped_end = thrust::make_zip_iterator(
-                thrust::make_tuple(bin_indices.end(), device_weights.end()));
-
-            // 3. 创建临时向量存放有效的配对
-            thrust::device_vector<thrust::tuple<int, double>> valid_pairs(nEvents);
-
-            // 4. 复制有效的配对（bin索引不为-1）
-            auto new_end = thrust::copy_if(
-                zipped_begin,
-                zipped_end,
-                valid_pairs.begin(),
-                [=] __device__(const thrust::tuple<int, double> &t) -> bool
-                {
-                    return thrust::get<0>(t) >= 0;
-                });
-
-            size_t valid_count = thrust::distance(valid_pairs.begin(), new_end);
-
-            if (valid_count > 0)
-            {
-                // 5. 按bin索引排序
-                thrust::sort(
-                    valid_pairs.begin(),
-                    valid_pairs.begin() + valid_count,
-                    [] __device__(const thrust::tuple<int, double> &a,
-                                  const thrust::tuple<int, double> &b) -> bool
-                    {
-                        return thrust::get<0>(a) < thrust::get<0>(b);
-                    });
-
-                // 6. 使用reduce_by_key累加权重
-                thrust::device_vector<int> unique_bins(n_bins);
-                thrust::device_vector<double> bin_sums(n_bins);
-
-                // 创建键和值的转换器
-                auto keys_begin = thrust::make_transform_iterator(
-                    valid_pairs.begin(),
-                    [] __device__(const thrust::tuple<int, double> &t) -> int
-                    {
-                        return thrust::get<0>(t);
-                    });
-
-                auto values_begin = thrust::make_transform_iterator(
-                    valid_pairs.begin(),
-                    [] __device__(const thrust::tuple<int, double> &t) -> double
-                    {
-                        return thrust::get<1>(t);
-                    });
-
-                auto result = thrust::reduce_by_key(
-                    keys_begin,
-                    keys_begin + valid_count,
-                    values_begin,
-                    unique_bins.begin(),
-                    bin_sums.begin());
-
-                size_t num_unique = thrust::distance(unique_bins.begin(), result.first);
-
-                // 7. 填充结果
-                for (size_t i = 0; i < num_unique; ++i)
-                {
-                    int bin = unique_bins[i];
-                    if (bin >= 0 && bin < n_bins)
-                    {
-                        bin_counts[bin] = bin_sums[i];
-                    }
-                }
-            }
-        }
-        else
-        {
-            // 无权重的情况（更简单，使用直方图）
-            thrust::device_vector<int> bin_indices(nEvents);
-
-            // 计算每个质量值对应的bin索引
-            thrust::transform(
-                device_masses.begin(),
-                device_masses.end(),
-                bin_indices.begin(),
-                [=] __device__(double mass) -> int
-                {
-                    if (mass < min_bin || mass >= max_bin)
-                    {
-                        return -1;
-                    }
-                    int idx = static_cast<int>((mass - min_bin) / bin_width);
-                    return (idx < n_bins) ? idx : n_bins - 1;
-                });
-
-            // 移除超出范围的事件
-            auto new_end = thrust::remove_if(
-                bin_indices.begin(),
-                bin_indices.end(),
-                [] __device__(int idx) -> bool
-                {
-                    return idx < 0;
-                });
-            size_t valid_count = thrust::distance(bin_indices.begin(), new_end);
-
-            // 对bin索引排序
-            thrust::sort(bin_indices.begin(), bin_indices.begin() + valid_count);
-
-            // 计算每个bin的事件数
-            thrust::device_vector<int> unique_bins(n_bins);
-            thrust::device_vector<int> bin_counts_int(n_bins);
-
-            auto result = thrust::reduce_by_key(
-                bin_indices.begin(),
-                bin_indices.begin() + valid_count,
-                thrust::constant_iterator<int>(1),
-                unique_bins.begin(),
-                bin_counts_int.begin());
-
-            // 将int计数转换为double并复制到bin_counts
-            size_t num_unique_bins = thrust::distance(unique_bins.begin(), result.first);
-            for (size_t i = 0; i < num_unique_bins; ++i)
-            {
-                int bin = unique_bins[i];
-                if (bin >= 0 && bin < n_bins)
-                {
-                    bin_counts[bin] = static_cast<double>(bin_counts_int[i]);
-                }
-            }
-        }
-
-        // 3.6 将结果复制回主机并填充TH1F
-        thrust::host_vector<double> host_bin_counts = bin_counts;
+        // 填充TH1F直方图
         for (int bin = 0; bin < n_bins; ++bin)
         {
-            // std::cout << "Bin " << bin << ": Count = " << host_bin_counts[bin] << std::endl;
             hist->SetBinContent(bin + 1, host_bin_counts[bin]);
         }
-
-        // 3.7 设置正确的直方图范围
         hist->SetBins(n_bins, min_bin, max_bin);
+
+        // 清理设备内存
+        cudaFree(device_particle_indices);
+        cudaFree(device_masses);
+        cudaFree(device_hist_bins);
 
         // std::cout << "Processed config " << configIdx << " with " << nEvents << " events" << std::endl;
     }
 }
 
-// 计算角度
-__device__ __host__ double EvtDecayAngleDevice(const LorentzVector &p, const LorentzVector &q, const LorentzVector &d)
+// 角度计算核函数
+__global__ void AngleCalculator(
+    const LorentzVector *momenta,
+    const int *particle_indices,
+    int *n_particles_in_config,
+    int total_particles,
+    int n_events,
+    double *angles)
 {
-    double pd = p.Dot(d);
-    double pq = p.Dot(q);
-    double qd = q.Dot(d);
-    double mp2 = p.M2();
-    double mq2 = q.M2();
-    double md2 = d.M2();
+    int event_idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-    double denominator = (pq * pq - mq2 * mp2) * (qd * qd - mq2 * md2);
-    if (denominator <= 0.0)
-        return 0.0; // Avoid sqrt of negative or zero
-
-    double cost = (pd * mq2 - pq * qd) / sqrt(denominator);
-
-    // Ensure cost is within [-1, 1] due to numerical errors
-    if (cost > 1.0)
-        cost = 1.0;
-    if (cost < -1.0)
-        cost = -1.0;
-
-    return cost;
-}
-
-// Functor for calculating helicity angle
-struct AngleCalculator
-{
-    const LorentzVector *momenta;
-    const int *particle_indices;
-    const int *group_sizes;
-    int total_particles;
-
-    __host__ __device__ double operator()(int event_idx) const
+    if (event_idx < n_events)
     {
-        // particle_indices[0] = p, [1] = q, [2] = d
-        // const LorentzVector &p = momenta[event_idx * total_particles + particle_indices[0]];
-        // const LorentzVector &q = momenta[event_idx * total_particles + particle_indices[1]];
-        // const LorentzVector &d = momenta[event_idx * total_particles + particle_indices[2]];
-
         int idx_offset = 0;
 
         LorentzVector p;
-        for (int i = 0; i < group_sizes[0]; ++i)
+        for (int i = 0; i < n_particles_in_config[0]; ++i)
         {
-            const LorentzVector &pi = momenta[event_idx * total_particles + particle_indices[idx_offset + i]];
-            p = p + pi;
+            int particle_idx = particle_indices[idx_offset + i];
+            p = p + momenta[event_idx * total_particles + particle_idx];
         }
+        idx_offset += n_particles_in_config[0];
 
         LorentzVector q;
-        idx_offset += group_sizes[0];
-        for (int i = 0; i < group_sizes[1]; ++i)
+        for (int i = 0; i < n_particles_in_config[1]; ++i)
         {
-            const LorentzVector &qi = momenta[event_idx * total_particles + particle_indices[idx_offset + i]];
-            q = q + qi;
+            int particle_idx = particle_indices[idx_offset + i];
+            q = q + momenta[event_idx * total_particles + particle_idx];
         }
+        idx_offset += n_particles_in_config[1];
 
         LorentzVector d;
-        idx_offset += group_sizes[1];
-        for (int i = 0; i < group_sizes[2]; ++i)
+        for (int i = 0; i < n_particles_in_config[2]; ++i)
         {
-            const LorentzVector &di = momenta[event_idx * total_particles + particle_indices[idx_offset + i]];
-            d = d + di;
+            int particle_idx = particle_indices[idx_offset + i];
+            d = d + momenta[event_idx * total_particles + particle_idx];
         }
 
-        return EvtDecayAngleDevice(p, q, d);
+        double pd = p.Dot(d);
+        double qd = q.Dot(d);
+        double pq = p.Dot(q);
+        double mp2 = p.M2();
+        double mq2 = q.M2();
+        double md2 = d.M2();
+
+        double denominator = (pq * pq - mq2 * mp2) * (qd * qd - mq2 * md2);
+        if (denominator <= 0)
+        {
+            angles[event_idx] = 0.0;
+            return;
+        }
+        double cost = (pd * mq2 - pq * qd) / sqrt(denominator);
+
+        angles[event_idx] = cost;
     }
-};
+}
 
 void CalculateAngleHist(
     LorentzVector *device_momenta,
     const std::map<std::string, int> &particleToIndex,
     const std::vector<AngleHistConfig> &histConfigs,
-    double *weights,
+    double *device_weights,
     std::vector<TH1F *> &outputHistograms,
     int nEvents, int nParticles)
 {
-    // 1. 检查输入
     if (outputHistograms.size() != histConfigs.size())
     {
         std::cerr << "Error: outputHistograms size (" << outputHistograms.size()
@@ -392,14 +249,10 @@ void CalculateAngleHist(
         return;
     }
 
-    // 2. 复制权重到设备（如果有的话）
-    thrust::device_vector<double> device_weights;
-    if (weights != nullptr)
-    {
-        device_weights = thrust::device_vector<double>(weights, weights + nEvents);
-    }
+    // CUDA配置
+    int blockSize = 256;
+    int gridSize = (nEvents + blockSize - 1) / blockSize;
 
-    // 3. 对每个直方图配置进行处理
     for (size_t configIdx = 0; configIdx < histConfigs.size(); ++configIdx)
     {
         const auto &config = histConfigs[configIdx];
@@ -413,7 +266,7 @@ void CalculateAngleHist(
 
         hist->Reset();
 
-        // 3.1 获取该配置需要的粒子索引和组大小
+        // 获取粒子索引
         std::vector<int> particleIndices;
         std::vector<int> groupSizes;
 
@@ -443,13 +296,6 @@ void CalculateAngleHist(
             continue;
         }
 
-        if (groupSizes.size() < 2)
-        {
-            std::cerr << "Error: Config " << configIdx << " needs at least 2 particle groups for Dalitz plot!" << std::endl;
-            continue;
-        }
-
-        // 检查range
         if (config.range.size() < 2)
         {
             std::cerr << "Error: Config " << configIdx << " range size < 2!" << std::endl;
@@ -461,242 +307,126 @@ void CalculateAngleHist(
         int n_bins = config.bins;
         double bin_width = (max_bin - min_bin) / n_bins;
 
-        // 3.2 将粒子索引和组大小复制到设备
-        thrust::device_vector<int> device_particle_indices = particleIndices;
-        thrust::device_vector<int> device_group_sizes = groupSizes;
-        int n_groups = groupSizes.size();
+        // 在设备上分配粒子索引数组
+        int *device_particle_indices;
+        cudaMalloc(&device_particle_indices, particleIndices.size() * sizeof(int));
+        cudaMemcpy(device_particle_indices, particleIndices.data(), particleIndices.size() * sizeof(int), cudaMemcpyHostToDevice);
 
-        // 3.3 为每个事件计算helicity角（使用Thrust transform）
-        thrust::device_vector<double> device_angles(nEvents);
+        int *device_group_sizes;
+        cudaMalloc(&device_group_sizes, groupSizes.size() * sizeof(int));
+        cudaMemcpy(device_group_sizes, groupSizes.data(), groupSizes.size() * sizeof(int), cudaMemcpyHostToDevice);
 
-        // 获取设备原始指针
-        int *d_indices_ptr = thrust::raw_pointer_cast(device_particle_indices.data());
-        int *d_group_sizes_ptr = thrust::raw_pointer_cast(device_group_sizes.data());
+        // 步骤1：计算所有事件的质量
+        double *device_angles;
+        cudaMalloc(&device_angles, nEvents * sizeof(double));
 
-        // 创建索引序列 [0, 1, 2, ..., nEvents-1]
-        thrust::device_vector<int> event_indices(nEvents);
-        thrust::sequence(event_indices.begin(), event_indices.end(), 0);
+        AngleCalculator<<<gridSize, blockSize>>>(device_momenta, device_particle_indices, device_group_sizes, nParticles, nEvents, device_angles);
+        cudaDeviceSynchronize();
 
-        // 计算所有事件的helicity角
-        thrust::transform(
-            event_indices.begin(),
-            event_indices.end(),
-            device_angles.begin(),
-            AngleCalculator{
-                device_momenta,
-                d_indices_ptr,
-                d_group_sizes_ptr,
-                nParticles});
+        // 步骤2：填充直方图
+        double *device_hist_bins;
+        cudaMalloc(&device_hist_bins, n_bins * sizeof(double));
+        cudaMemset(device_hist_bins, 0, n_bins * sizeof(double));
 
-        // 3.4 创建直方图bin边界
-        thrust::device_vector<double> bin_edges(n_bins + 1);
-        for (int i = 0; i <= n_bins; ++i)
-        {
-            bin_edges[i] = min_bin + i * bin_width;
-        }
+        fillHistogramKernel<<<gridSize, blockSize>>>(device_angles, device_weights, nEvents, device_hist_bins, n_bins, min_bin, max_bin, bin_width);
+        cudaDeviceSynchronize();
 
-        // 3.5 将角度分配到bins中（使用权重）
-        thrust::device_vector<double> bin_counts(n_bins, 0.0);
+        // 步骤3：将直方图结果复制回主机
+        std::vector<double> host_bin_counts(n_bins, 0.0);
+        cudaMemcpy(host_bin_counts.data(), device_hist_bins,
+                   n_bins * sizeof(double), cudaMemcpyDeviceToHost);
 
-        if (weights != nullptr)
-        {
-            // 使用transform计算bin索引
-            thrust::device_vector<int> bin_indices(nEvents);
-
-            thrust::transform(
-                device_angles.begin(),
-                device_angles.end(),
-                bin_indices.begin(),
-                [=] __device__(double angle) -> int
-                {
-                    // 关键修改：这里应该使用和下面无权重部分相同的逻辑
-                    if (angle < min_bin || angle >= max_bin) // 注意这里是 >=，不是 >
-                    {
-                        return -1;
-                    }
-                    int idx = static_cast<int>((angle - min_bin) / bin_width);
-                    // 处理刚好等于max_bin的情况（由于浮点精度可能发生）
-                    if (idx >= n_bins)
-                        idx = n_bins - 1;
-                    return idx;
-                });
-
-            // 使用zip迭代器将bin索引和权重组合
-            auto zipped_begin = thrust::make_zip_iterator(
-                thrust::make_tuple(bin_indices.begin(), device_weights.begin()));
-            auto zipped_end = thrust::make_zip_iterator(
-                thrust::make_tuple(bin_indices.end(), device_weights.end()));
-
-            // 移除无效的（bin索引为-1的）
-            auto new_end = thrust::remove_if(
-                zipped_begin,
-                zipped_end,
-                [=] __device__(const thrust::tuple<int, double> &t) -> bool
-                {
-                    return thrust::get<0>(t) < 0;
-                });
-
-            // 计算有效数量
-            size_t valid_count = thrust::distance(zipped_begin, new_end);
-
-            // 分离有效的bin索引和权重
-            thrust::device_vector<int> valid_bins(valid_count);
-            thrust::device_vector<double> valid_weights(valid_count);
-
-            thrust::transform(
-                zipped_begin, new_end,
-                thrust::make_zip_iterator(thrust::make_tuple(
-                    valid_bins.begin(), valid_weights.begin())),
-                [=] __device__(const thrust::tuple<int, double> &t)
-                {
-                    return t;
-                });
-
-            // 按bin索引排序
-            thrust::sort_by_key(valid_bins.begin(), valid_bins.end(), valid_weights.begin());
-
-            // 使用reduce_by_key累加权重
-            thrust::device_vector<int> unique_bins(n_bins);
-            thrust::device_vector<double> bin_sums(n_bins);
-
-            auto result = thrust::reduce_by_key(
-                valid_bins.begin(), valid_bins.end(),
-                valid_weights.begin(),
-                unique_bins.begin(),
-                bin_sums.begin());
-
-            size_t num_unique = thrust::distance(unique_bins.begin(), result.first);
-
-            // 填充结果
-            for (size_t i = 0; i < num_unique; ++i)
-            {
-                int bin = unique_bins[i];
-                if (bin >= 0 && bin < n_bins)
-                {
-                    bin_counts[bin] = bin_sums[i];
-                }
-            }
-        }
-        else
-        {
-            // 无权重的情况（更简单，使用直方图）
-            thrust::device_vector<int> bin_indices(nEvents);
-
-            // 计算每个角度值对应的bin索引 - 使用和有权重部分相同的逻辑
-            thrust::transform(
-                device_angles.begin(),
-                device_angles.end(),
-                bin_indices.begin(),
-                [=] __device__(double angle) -> int
-                {
-                    if (angle < min_bin || angle >= max_bin) // 注意这里是 >=
-                    {
-                        return -1;
-                    }
-                    int idx = static_cast<int>((angle - min_bin) / bin_width);
-                    // 处理刚好等于max_bin的情况（由于浮点精度可能发生）
-                    if (idx >= n_bins)
-                        idx = n_bins - 1;
-                    return idx;
-                });
-
-            // 移除超出范围的事件
-            auto new_end = thrust::remove_if(
-                bin_indices.begin(),
-                bin_indices.end(),
-                [] __device__(int idx) -> bool
-                {
-                    return idx < 0;
-                });
-            size_t valid_count = thrust::distance(bin_indices.begin(), new_end);
-
-            // 对bin索引排序
-            thrust::sort(bin_indices.begin(), bin_indices.begin() + valid_count);
-
-            // 计算每个bin的事件数
-            thrust::device_vector<int> unique_bins(n_bins);
-            thrust::device_vector<int> bin_counts_int(n_bins);
-
-            auto result = thrust::reduce_by_key(
-                bin_indices.begin(),
-                bin_indices.begin() + valid_count,
-                thrust::constant_iterator<int>(1),
-                unique_bins.begin(),
-                bin_counts_int.begin());
-
-            // 将int计数转换为double并复制到bin_counts
-            size_t num_unique_bins = thrust::distance(unique_bins.begin(), result.first);
-            for (size_t i = 0; i < num_unique_bins; ++i)
-            {
-                int bin = unique_bins[i];
-                if (bin >= 0 && bin < n_bins)
-                {
-                    bin_counts[bin] = static_cast<double>(bin_counts_int[i]);
-                }
-            }
-        }
-
-        // 3.6 将结果复制回主机并填充TH1F
-        thrust::host_vector<double> host_bin_counts = bin_counts;
+        // 填充TH1F直方图
         for (int bin = 0; bin < n_bins; ++bin)
         {
             hist->SetBinContent(bin + 1, host_bin_counts[bin]);
         }
-
-        // 3.7 设置正确的直方图范围
         hist->SetBins(n_bins, min_bin, max_bin);
+
+        // 清理设备内存
+        cudaFree(device_particle_indices);
+        cudaFree(device_angles);
+        cudaFree(device_hist_bins);
+
+        // std::cout << "Processed config " << configIdx << " with " << nEvents << " events" << std::endl;
     }
 }
 
-// 计算Dalitz图
-struct DalitzCalculator
+__global__ void fill2DHistogramKernel(
+    const LorentzVector *momenta,
+    const int *particle_indices,
+    const int *group_sizes,
+    const int n_particles,
+    const double *weights,
+    int n_events,
+    double *hist_bins,
+    int x_bins,
+    int y_bins,
+    double x_min,
+    double x_max,
+    double y_min,
+    double y_max,
+    double x_bin_width,
+    double y_bin_width)
 {
-    const LorentzVector *momenta;
-    const int *particle_indices; // Array of 3 particle group indices: [group1_idx1, group1_idx2, ..., group2_idx1, ...]
-    const int *group_sizes;      // Size of each particle group
-    int n_groups;                // Number of particle groups (should be 2 or 3)
-    int total_particles;
+    int event_idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-    __host__ __device__ thrust::pair<double, double> operator()(int event_idx) const
+    if (event_idx < n_events)
     {
-        double m12_sq = 0.0;
-        double m13_sq = 0.0;
-
-        // Calculate invariant mass squared for first two groups
         int idx_offset = 0;
 
-        // Group 1
-        LorentzVector total1;
+        // 计算第一个质量
+        LorentzVector p1;
         for (int i = 0; i < group_sizes[0]; ++i)
         {
-            const LorentzVector &p = momenta[event_idx * total_particles + particle_indices[idx_offset + i]];
-            total1 = total1 + p;
+            int particle_idx = particle_indices[idx_offset + i];
+            p1 = p1 + momenta[event_idx * n_particles + particle_idx];
         }
-        m12_sq = total1.M2();
         idx_offset += group_sizes[0];
 
-        // Group 2
-        LorentzVector total2;
+        // 计算第二个质量
+        LorentzVector p2;
         for (int i = 0; i < group_sizes[1]; ++i)
         {
-            const LorentzVector &p = momenta[event_idx * total_particles + particle_indices[idx_offset + i]];
-            total2 = total2 + p;
+            int particle_idx = particle_indices[idx_offset + i];
+            p2 = p2 + momenta[event_idx * n_particles + particle_idx];
         }
-        m13_sq = total2.M2();
 
-        return thrust::make_pair(m12_sq, m13_sq);
+        double weight = 1.0;
+        if (weights != nullptr)
+            weight = weights[event_idx];
+
+        if (p1.M2() >= x_min && p1.M2() < x_max && p2.M2() >= y_min && p2.M2() < y_max)
+        {
+            int x_bin_idx = static_cast<int>((p1.M2() - x_min) / x_bin_width);
+            int y_bin_idx = static_cast<int>((p2.M2() - y_min) / y_bin_width);
+
+            if (x_bin_idx < 0)
+                x_bin_idx = 0;
+            if (x_bin_idx >= x_bins)
+                x_bin_idx = x_bins - 1;
+            if (y_bin_idx < 0)
+                y_bin_idx = 0;
+            if (y_bin_idx >= y_bins)
+                y_bin_idx = y_bins - 1;
+
+            // 计算一维索引（行优先）
+            int bin_idx = y_bin_idx * x_bins + x_bin_idx;
+
+            // 使用原子操作确保线程安全
+            atomicAdd(&hist_bins[bin_idx], weight);
+        }
     }
-};
+}
 
 void CalculateDalitzHist(
     LorentzVector *device_momenta,
     const std::map<std::string, int> &particleToIndex,
     const std::vector<DalitzHistConfig> &histConfigs,
-    double *weights,
+    double *device_weights,
     std::vector<TH2F *> &outputHistograms,
     int nEvents, int nParticles)
 {
-    // 1. 检查输入
     if (outputHistograms.size() != histConfigs.size())
     {
         std::cerr << "Error: outputHistograms size (" << outputHistograms.size()
@@ -710,16 +440,10 @@ void CalculateDalitzHist(
         return;
     }
 
-    // 2. 复制权重到设备（如果有的话）
-    thrust::device_vector<double> device_weights;
-    if (weights != nullptr)
-    {
-        // thrust::host_vector<double> host_weights(weights, weights + nEvents);
-        // device_weights = host_weights;
-        device_weights = thrust::device_vector<double>(weights, weights + nEvents);
-    }
+    // CUDA配置
+    int blockSize = 256;
+    int gridSize = (nEvents + blockSize - 1) / blockSize;
 
-    // 3. 对每个直方图配置进行处理
     for (size_t configIdx = 0; configIdx < histConfigs.size(); ++configIdx)
     {
         const auto &config = histConfigs[configIdx];
@@ -733,7 +457,7 @@ void CalculateDalitzHist(
 
         hist->Reset();
 
-        // 3.1 获取该配置需要的粒子索引和组大小
+        // 获取粒子索引
         std::vector<int> particleIndices;
         std::vector<int> groupSizes;
 
@@ -763,16 +487,9 @@ void CalculateDalitzHist(
             continue;
         }
 
-        if (groupSizes.size() < 2)
+        if (config.range.size() < 2)
         {
-            std::cerr << "Error: Config " << configIdx << " needs at least 2 particle groups for Dalitz plot!" << std::endl;
-            continue;
-        }
-
-        // 检查range和bins
-        if (config.range.size() < 2 || config.bins.size() < 2)
-        {
-            std::cerr << "Error: Config " << configIdx << " range or bins size < 2!" << std::endl;
+            std::cerr << "Error: Config " << configIdx << " range size < 2!" << std::endl;
             continue;
         }
 
@@ -782,76 +499,54 @@ void CalculateDalitzHist(
         double y_max = config.range[1][1];
         int x_bins = config.bins[0];
         int y_bins = config.bins[1];
-
         double x_bin_width = (x_max - x_min) / x_bins;
         double y_bin_width = (y_max - y_min) / y_bins;
 
-        // 3.2 将粒子索引和组大小复制到设备
-        thrust::device_vector<int> device_particle_indices = particleIndices;
-        thrust::device_vector<int> device_group_sizes = groupSizes;
-        int n_groups = groupSizes.size();
+        // 在设备上分配粒子索引数组
+        int *device_particle_indices;
+        cudaMalloc(&device_particle_indices, particleIndices.size() * sizeof(int));
+        cudaMemcpy(device_particle_indices, particleIndices.data(), particleIndices.size() * sizeof(int), cudaMemcpyHostToDevice);
 
-        // 3.3 为每个事件计算Dalitz坐标（使用Thrust transform）
-        thrust::device_vector<thrust::pair<double, double>> device_coords(nEvents);
+        int *device_group_sizes;
+        cudaMalloc(&device_group_sizes, groupSizes.size() * sizeof(int));
+        cudaMemcpy(device_group_sizes, groupSizes.data(), groupSizes.size() * sizeof(int), cudaMemcpyHostToDevice);
 
-        // 获取设备原始指针
-        // LorentzVector *d_momenta_ptr = h_momenta.momenta;
-        int *d_indices_ptr = thrust::raw_pointer_cast(device_particle_indices.data());
-        int *d_group_sizes_ptr = thrust::raw_pointer_cast(device_group_sizes.data());
+        // 步骤1：计算所有事件的质量
+        // double *device_angles;
+        // cudaMalloc(&device_angles, nEvents * sizeof(double));
 
-        // 创建索引序列 [0, 1, 2, ..., nEvents-1]
-        thrust::device_vector<int> event_indices(nEvents);
-        thrust::sequence(event_indices.begin(), event_indices.end(), 0);
+        // AngleCalculator<<<gridSize, blockSize>>>(device_momenta, device_particle_indices, device_group_sizes, nParticles, nEvents, device_angles);
+        // cudaDeviceSynchronize();
 
-        // 计算所有事件的Dalitz坐标
-        thrust::transform(
-            event_indices.begin(),
-            event_indices.end(),
-            device_coords.begin(),
-            DalitzCalculator{
-                device_momenta,
-                d_indices_ptr,
-                d_group_sizes_ptr,
-                n_groups,
-                nParticles});
+        // 步骤2：填充直方图
+        double *device_hist_bins;
+        cudaMalloc(&device_hist_bins, x_bins * y_bins * sizeof(double));
+        cudaMemset(device_hist_bins, 0, x_bins * y_bins * sizeof(double));
 
-        // 3.4 将坐标复制回主机
-        thrust::host_vector<thrust::pair<double, double>> host_coords = device_coords;
+        fill2DHistogramKernel<<<gridSize, blockSize>>>(device_momenta, device_particle_indices, device_group_sizes, nParticles, device_weights, nEvents, device_hist_bins, x_bins, y_bins, x_min, x_max, y_min, y_max, x_bin_width, y_bin_width);
+        cudaDeviceSynchronize();
 
-        // 3.5 填充二维直方图
+        // 步骤3：将直方图结果复制回主机
+        std::vector<double> host_bin_counts(x_bins * y_bins, 0.0);
+        cudaMemcpy(host_bin_counts.data(), device_hist_bins,
+                   x_bins * y_bins * sizeof(double), cudaMemcpyDeviceToHost);
+
+        // 填充TH2F直方图
         hist->SetBins(x_bins, x_min, x_max, y_bins, y_min, y_max);
 
-        if (weights != nullptr)
+        for (int y_bin = 0; y_bin < y_bins; ++y_bin)
         {
-            // 有权重的情况
-            thrust::host_vector<double> host_weights = device_weights;
-            for (int evt = 0; evt < nEvents; ++evt)
+            for (int x_bin = 0; x_bin < x_bins; ++x_bin)
             {
-                double x = host_coords[evt].first;
-                double y = host_coords[evt].second;
-
-                // 检查坐标是否在范围内
-                if (x >= x_min && x < x_max && y >= y_min && y < y_max)
-                {
-                    hist->Fill(x, y, host_weights[evt]);
-                }
-            }
-        }
-        else
-        {
-            // 无权重的情况
-            for (int evt = 0; evt < nEvents; ++evt)
-            {
-                double x = host_coords[evt].first;
-                double y = host_coords[evt].second;
-
-                if (x >= x_min && x < x_max && y >= y_min && y < y_max)
-                {
-                    hist->Fill(x, y);
-                }
+                int bin_idx = y_bin * x_bins + x_bin;
+                hist->SetBinContent(x_bin + 1, y_bin + 1, host_bin_counts[bin_idx]);
             }
         }
 
-        // std::cout << "Processed Dalitz config " << configIdx << " with " << nEvents << " events" << std::endl;
+        // 清理设备内存
+        cudaFree(device_particle_indices);
+        cudaFree(device_hist_bins);
+
+        // std::cout << "Processed config " << configIdx << " with " << nEvents << " events" << std::endl;
     }
 }

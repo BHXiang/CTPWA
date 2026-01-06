@@ -929,11 +929,11 @@ __global__ void computeAmpsKernel(
                 resAmp *= BlattWeisskopf(sl.L, qq, q0);
             }
         }
-        else
-        {
-            // 非共振态节点，只计算Blatt-Weisskopf因子
-            resAmp *= BlattWeisskopf(sl.L, qq, q0);
-        }
+        // else
+        // {
+        //     // 非共振态节点，只计算Blatt-Weisskopf因子
+        //     resAmp *= BlattWeisskopf(sl.L, qq, q0);
+        // }
     }
 
     // 计算极化相关的振幅
