@@ -297,7 +297,8 @@ void ConfigParser::parseParticles(const YAML::Node &node)
 
         Particle particle;
         particle.name = name;
-        particle.spin = props["J"].as<int>();
+        // particle.spin = props["J"].as<int>();
+        particle.spin = 2 * props["J"].as<int>() + 1;
         particle.parity = props["P"].as<int>();
         particle.mass = props["mass"].as<double>();
 
@@ -330,6 +331,9 @@ void ConfigParser::parseData(const YAML::Node &node)
 
     if (node["phsp"])
         data_files_["phsp"] = node["phsp"].as<std::vector<std::string>>();
+
+    if (node["phsp_truth"])
+        data_files_["phsp_truth"] = node["phsp_truth"].as<std::vector<std::string>>();
 
     if (node["bkg"])
         data_files_["bkg"] = node["bkg"].as<std::vector<std::string>>();
@@ -416,7 +420,8 @@ void ConfigParser::parseResonances(const YAML::Node &node)
 
         ResonanceConfig res;
         res.name = name;
-        res.J = props["J"].as<int>();
+        // res.J = props["J"].as<int>();
+        res.J = 2 * props["J"].as<int>() + 1;
         res.P = props["P"].as<int>();
         res.type = props["model"].as<std::string>();
         res.parameters = props["parameters"].as<std::vector<double>>();

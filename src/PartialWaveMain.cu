@@ -11,7 +11,7 @@
 #include <AmpGen.cuh>
 #include <ComputeNLL.cuh>
 #include <ComputeGrad.cuh>
-#include <ComputeWeight.cuh>
+#include <ComputeResults.cuh>
 #include <Config.cuh>
 #include <Figure.cuh>
 
@@ -19,6 +19,7 @@
 #include <TTree.h>
 #include <TLorentzVector.h>
 #include <TObjString.h>
+#include <TMatrixD.h>
 
 //////////////////////////////////////////////
 struct ChainInfo
@@ -454,6 +455,8 @@ public:
 		cudaMemcpy(&h_phsp_factor, d_mc_amp, sizeof(double), cudaMemcpyDeviceToHost);
 		h_phsp_factor = h_phsp_factor / static_cast<double>(phsp_length / n_polar_);
 
+		// std::cout << "[NLLForward] PHSP factor: " << h_phsp_factor << " Nphsp: " << phsp_length / n_polar_ << std::endl;
+
 		// NLL计算
 		cuComplex *d_S = nullptr;
 		cuComplex *d_Q = nullptr;
@@ -871,7 +874,16 @@ public:
 		return n_gls_ - con_trans_id_.size();
 	}
 
-	void writeWeightFile(torch::Tensor &vector, const std::string &filename, const int is_saved_weight = 0)
+	torch::Tensor getSLVectors() const
+	{
+		torch::Device dev(torch::kCUDA, 0);
+		torch::TensorOptions options = torch::TensorOptions()
+										   .dtype(torch::kInt)
+										   .device(dev);
+		return torch::tensor(nSLvectors_, options);
+	}
+
+	void writeResult(torch::Tensor &vector, const std::string &filename, const int is_saved_weight = 0)
 	{
 		TORCH_CHECK(vector.is_cuda(), "vector must be on CUDA");
 		TORCH_CHECK(vector.dtype() == torch::kComplexFloat, "vector must be complex128");
@@ -884,119 +896,19 @@ public:
 
 		torch::Tensor extended_vector = NLLFunction::extendVectorWithConstraints(vector, dev);
 
-		// for (const auto &vecid : con_trans_id_)
-		// {
-		// 	if (!vecid.empty())
-		// 	{
-		// 		auto max_it = std::max_element(vecid.begin(), vecid.end());
-		// 		extended_size = std::max(extended_size, *max_it + 1);
-		// 	}
-		// }
-
-		// torch::TensorOptions options = torch::TensorOptions().dtype(torch::kComplexFloat).device(dev);
-
-		// torch::Tensor extended_vector = torch::zeros({extended_size}, options);
-
-		// 创建索引，选择原始部分
-		// torch::Tensor indices = torch::arange(0, original_size, torch::kLong).to(dev);
-		// extended_vector.index_copy_(0, indices, vector);
-
-		// // 在 GPU 上处理约束
-		// for (size_t i = 0; i < con_trans_id_.size(); ++i)
-		// {
-		// 	const auto &vecid = con_trans_id_[i];
-		// 	const auto &values = con_trans_values_[i];
-
-		// 	if (vecid.empty() || values.empty() || vecid.size() != values.size())
-		// 	{
-		// 		continue;
-		// 	}
-
-		// 	// 找到原始ID（最小值）
-		// 	auto min_it = std::min_element(vecid.begin(), vecid.end());
-		// 	int origin_idx = std::distance(vecid.begin(), min_it);
-		// 	int origin_id = vecid[origin_idx];
-
-		// 	// 确保原始ID有效
-		// 	if (origin_id < 0 || origin_id >= original_size)
-		// 	{
-		// 		continue;
-		// 	}
-
-		// 	// 获取原始ID对应的系数
-		// 	std::complex<double> origin_coeff = values[origin_idx];
-		// 	double origin_coeff_real = std::real(origin_coeff);
-		// 	double origin_coeff_imag = std::imag(origin_coeff);
-
-		// 	// 检查分母不为零
-		// 	if (std::abs(origin_coeff_real) < 1e-10 || std::abs(origin_coeff_imag) < 1e-10)
-		// 	{
-		// 		std::cerr << "Warning: origin coefficient too small, skipping constraint group " << i << std::endl;
-		// 		continue;
-		// 	}
-
-		// 	// 为每个扩展ID设置值
-		// 	for (size_t j = 0; j < vecid.size(); ++j)
-		// 	{
-		// 		if (j == origin_idx)
-		// 			continue; // 跳过原始ID
-
-		// 		int extended_id = vecid[j];
-
-		// 		// 确保扩展ID有效且不超过values数组的大小
-		// 		if (extended_id >= 0 && extended_id < extended_size && j < values.size())
-		// 		{
-		// 			std::complex<double> ext_coeff = values[j];
-		// 			double ext_coeff_real = std::real(ext_coeff);
-		// 			double ext_coeff_imag = std::imag(ext_coeff);
-
-		// 			// 计算系数比例（直接在 GPU 上）
-		// 			float real_ratio = static_cast<float>(ext_coeff_real / origin_coeff_real);
-		// 			float imag_ratio = static_cast<float>(ext_coeff_imag / origin_coeff_imag);
-
-		// 			// 在 GPU 上执行线性变换
-		// 			// extended_vector[extended_id] = real_ratio * real_part + imag_ratio * imag_part
-
-		// 			// 获取原始向量的值
-		// 			torch::Tensor origin_value = vector[origin_id];
-
-		// 			// 计算实部和虚部
-		// 			torch::Tensor real_part = (origin_value + torch::conj(origin_value)) / 2.0f;
-		// 			torch::Tensor imag_part = (origin_value - torch::conj(origin_value)) / (2.0f * c10::complex<float>(0, 1));
-
-		// 			// 计算扩展值
-		// 			torch::Tensor extended_real = real_ratio * real_part;
-		// 			torch::Tensor extended_imag = imag_ratio * imag_part;
-
-		// 			// 合并实部和虚部
-		// 			torch::Tensor extended_value = extended_real + c10::complex<float>(0, 1) * extended_imag;
-
-		// 			// 赋值
-		// 			extended_vector[extended_id] = extended_value;
-		// 		}
-		// 	}
-		// }
-
-		// 输出 extended_vector 内容用于调试
-		// std::cout << "Extended vector: " << torch::real(extended_vector).cpu() << " " << torch::imag(extended_vector).cpu() << std::endl;
-
-		////////////////////////////////////////////////////////////////////////////
-		// std::cout << "Extended vector: " << extended_vector.cpu() << std::endl;
-		////////////////////////////////////////////////////////////////////////////
-
 		const int target_dev = vector.get_device();
 		cudaSetDevice(target_dev);
 
 		const int n_events = phsp_length / n_polar_; // 事件数量
 		double *d_final_result;
 		double *d_partial_result;
-		double *d_partial_sum;
+		// double *d_partial_sum;
 
 		// 分配设备内存
 		cudaMalloc(&d_final_result, n_events * sizeof(double));
 		int npartials = nSLvectors_.size();
 		cudaMalloc(&d_partial_result, n_events * npartials * sizeof(double));
-		cudaMalloc(&d_partial_sum, npartials * sizeof(double));
+		// cudaMalloc(&d_partial_sum, npartials * sizeof(double));
 
 		// 分配nSLvectors_的设备内存
 		int *d_nSLvectors;
@@ -1006,17 +918,48 @@ public:
 		cudaMalloc(&d_total_integral, sizeof(double));
 		cudaMemset(d_total_integral, 0, sizeof(double));
 
+		// 分配干涉矩阵和事件干涉项的设备内存
+		double *d_interference_matrix;
+		cudaMalloc(&d_interference_matrix, npartials * npartials * sizeof(double));
+		cudaMemset(d_interference_matrix, 0, npartials * npartials * sizeof(double));
+		double *d_event_interference;
+		cudaMalloc(&d_event_interference, n_events * npartials * npartials * sizeof(double));
+		cudaMemset(d_event_interference, 0, n_events * npartials * npartials * sizeof(double));
+
 		// 计算权重
-		computeWeightResult(phsp_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_final_result, d_total_integral, d_partial_result, d_partial_sum, d_nSLvectors, npartials, n_events, n_gls_, n_polar_);
+		computeResults(phsp_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_final_result, d_total_integral, d_partial_result, d_interference_matrix, d_event_interference, d_nSLvectors, npartials, n_events, n_gls_, n_polar_);
+		// computeWeightResult(phsp_fix_, reinterpret_cast<const cuComplex *>(extended_vector.data_ptr()), d_final_result, d_total_integral, d_partial_result, d_nSLvectors, npartials, n_events, n_gls_, n_polar_);
 
 		double *h_total_results = new double[n_events];
 		cudaMemcpy(h_total_results, d_final_result, n_events * sizeof(double), cudaMemcpyDeviceToHost);
 		double *h_partial_results = new double[n_events * npartials];
 		cudaMemcpy(h_partial_results, d_partial_result, n_events * npartials * sizeof(double), cudaMemcpyDeviceToHost);
-		double *h_partial_sums = new double[npartials];
-		cudaMemcpy(h_partial_sums, d_partial_sum, npartials * sizeof(double), cudaMemcpyDeviceToHost);
+		// double *h_partial_sums = new double[npartials];
+		// cudaMemcpy(h_partial_sums, d_partial_sum, npartials * sizeof(double), cudaMemcpyDeviceToHost);
 		double h_phsp_integral;
 		cudaMemcpy(&h_phsp_integral, d_total_integral, sizeof(double), cudaMemcpyDeviceToHost);
+		double *h_interference_matrix = new double[npartials * npartials];
+		cudaMemcpy(h_interference_matrix, d_interference_matrix, npartials * npartials * sizeof(double), cudaMemcpyDeviceToHost);
+
+		///////////////////////////////////////////////////
+		// truth phase space for branching fraciton
+		///////////////////////////////////////////////////
+		// {
+		// 	const auto &data_files = config_parser_.getDataFiles();
+		// 	const auto &data_order = config_parser_.getDataOrder();
+
+		// 	std::vector<std::string> particles_names;
+		// 	for (const auto &particle : particles_)
+		// 	{
+		// 		particles_names.push_back(particle.name);
+		// 	}
+
+		// 	Vp4_truth_ = readWeightsFromFile(data_files.at("phsp_truth"), data_order, particles_names);
+		// 	std::cout << "Phase space truth events: " << Vp4_truth_.begin()->second.size() << std::endl;
+		// 	std::cout << "Calculating phase space truth amplitudes..." << std::endl;
+		// 	cuComplex *truth_amplitude = calculateAmplitudes(Vp4_truth_);
+		// 	truth_length = Vp4_truth_.begin()->second.size() * n_polar_;
+		// }
 
 		// // 写入文件
 		// std::ofstream outfile("total_weights.dat");
@@ -1036,6 +979,10 @@ public:
 		// }
 
 		int dataIntegral = data_length / n_polar_;
+		if (bkg_fix_ != nullptr && bkg_length > 0)
+		{
+			dataIntegral -= bkg_length / n_polar_;
+		}
 		double normFactor = static_cast<double>(dataIntegral) / h_phsp_integral;
 
 		// 创建 ROOT 文件
@@ -1047,16 +994,32 @@ public:
 		legend->Write();
 		delete legend;
 
+		// 写入干涉矩阵
+		if (h_interference_matrix != nullptr)
+		{
+			TMatrixD interferenceMatrix(npartials, npartials);
+			for (int i = 0; i < npartials; ++i)
+			{
+				for (int j = i; j < npartials; ++j)
+				{
+					int idx = i * npartials - i * (i - 1) / 2 + (j - i);
+					interferenceMatrix[i][j] = h_interference_matrix[idx];
+				}
+			}
+
+			interferenceMatrix.Write("interference");
+		}
+
 		if (is_saved_weight == 1)
 		{
 			TTree *phspTree = new TTree("saved_weight", "fitting result weights");
 
 			// 添加权重分支
 			double total_weight;
-			std::vector<double> partial_weights(npartials);
 			phspTree->Branch("totalweight", &total_weight);
 
 			// 为每个部分波创建分支
+			std::vector<double> partial_weights(npartials);
 			for (int i = 0; i < npartials; ++i)
 			{
 				std::string branch_name = "weight_" + resonance_names_[i];
@@ -1071,10 +1034,35 @@ public:
 				// std::cout << "Event " << i << ": Total Weight = " << total_weight << std::endl;
 				for (int j = 0; j < npartials; ++j)
 				{
-					partial_weights[j] = h_partial_results[i * npartials + j] * static_cast<double>(dataIntegral) / h_phsp_integral;
+					partial_weights[j] = h_partial_results[i * npartials + j] * normFactor;
 					// std::cout << "  Partial Weight " << j << " = " << partial_weights[j] << std::endl;
 				}
 
+				phspTree->Fill();
+			}
+
+			// 干涉项分支
+			double *h_event_interference = new double[n_events * npartials * npartials];
+			cudaMemcpy(h_event_interference, d_event_interference, n_events * npartials * npartials * sizeof(double), cudaMemcpyDeviceToHost);
+			std::vector<std::vector<double>> interference_terms(npartials, std::vector<double>(npartials));
+			for (int i = 0; i < npartials; ++i)
+			{
+				for (int j = 0; j < npartials; ++j)
+				{
+					std::string branch_name = "inter_" + resonance_names_[i] + "_" + resonance_names_[j];
+					phspTree->Branch(branch_name.c_str(), &interference_terms[i][j]);
+				}
+			}
+
+			for (int evt = 0; evt < n_events; ++evt)
+			{
+				for (int i = 0; i < npartials; ++i)
+				{
+					for (int j = 0; j < npartials; ++j)
+					{
+						interference_terms[i][j] = h_event_interference[evt * npartials * npartials + i * npartials + j] * normFactor;
+					}
+				}
 				phspTree->Fill();
 			}
 
@@ -1429,58 +1417,172 @@ public:
 		cudaFree(d_final_result);
 		cudaFree(d_partial_result);
 		cudaFree(d_nSLvectors);
+		cudaFree(d_total_integral);
+		cudaFree(d_interference_matrix);
+		cudaFree(d_event_interference);
 		delete[] h_total_results;
 		delete[] h_partial_results;
 	}
 
+	// void writeInterference(torch::Tensor &vector, torch::Tensor &covMatrix, const std::string &filename)
+	// {
+	// 	TORCH_CHECK(vector.is_cuda(), "vector must be on CUDA");
+	// 	TORCH_CHECK(vector.dtype() == torch::kComplexFloat, "vector must be complex128");
+	// 	TORCH_CHECK(covMatrix.is_cuda(), "covMatrix must be on CUDA");
+	// 	TORCH_CHECK(covMatrix.dtype() == torch::kComplexFloat, "covMatrix must be complex128");
+
+	// 	const int target_dev = vector.get_device();
+	// 	torch::Device dev(torch::kCUDA, target_dev);
+	// 	cudaSetDevice(target_dev);
+
+	// 	int npartials = nSLvectors_.size();
+
+	// 	int *d_nSLvectors;
+	// 	cudaMalloc(&d_nSLvectors, nSLvectors_.size() * sizeof(int));
+	// 	cudaMemcpy(d_nSLvectors, nSLvectors_.data(), npartials * sizeof(int), cudaMemcpyHostToDevice);
+
+	// 	// 分配干涉矩阵的设备内存
+	// 	double *d_interference_matrix;
+	// 	cudaMalloc(&d_interference_matrix, npartials * npartials * sizeof(double));
+	// 	cudaMemset(d_interference_matrix, 0, npartials * npartials * sizeof(double));
+	// 	double *d_interference_errors;
+	// 	cudaMalloc(&d_interference_errors, npartials * npartials * sizeof(double));
+	// 	cudaMemset(d_interference_errors, 0, npartials * npartials * sizeof(double));
+
+	// 	std::cout << "vector size: " << vector.numel() << std::endl;
+	// 	std::cout << "vector: " << torch::real(vector) << " " << torch::imag(vector) << std::endl;
+
+	// 	// 计算干涉矩阵
+	// 	// void computeInterference(
+	// 	// 	const cuComplex *d_M,		   // 矩阵 M [ngls][nEvents*npolar]
+	// 	// 	const cuComplex *d_v,		   // 参数向量 v [ngls]
+	// 	// 	const cuComplex *d_Cov_v,	   // v的协方差矩阵 [ngls][ngls]
+	// 	// 	double *d_interference_matrix, // 输出干涉矩阵 [ninterference]
+	// 	// 	double *d_interference_errors, // 输出干涉矩阵标准差 [ninterference]
+	// 	// 	int *d_nSLvectors,
+	// 	// 	int npartials, int nEvents, int ngls, int npolar);
+	// 	computeInterference(phsp_fix_, reinterpret_cast<const cuComplex *>(vector.data_ptr()), reinterpret_cast<const cuComplex *>(covMatrix.data_ptr()), d_interference_matrix, d_interference_errors, d_nSLvectors, npartials, phsp_length / n_polar_, n_gls_, n_polar_);
+
+	// 	double *h_interference_matrix = new double[npartials * npartials];
+	// 	cudaMemcpy(h_interference_matrix, d_interference_matrix, npartials * npartials * sizeof(double), cudaMemcpyDeviceToHost);
+	// 	double *h_interference_errors = new double[npartials * npartials];
+	// 	cudaMemcpy(h_interference_errors, d_interference_errors, npartials * npartials * sizeof(double), cudaMemcpyDeviceToHost);
+
+	// 	// 写入文件
+	// 	std::ofstream outfile(filename);
+	// 	if (outfile.is_open())
+	// 	{
+	// 		for (int i = 0; i < npartials; ++i)
+	// 		{
+	// 			for (int j = 0; j < npartials; ++j)
+	// 			{
+	// 				outfile << h_interference_matrix[i * npartials + j];
+	// 				if (j < npartials - 1)
+	// 					outfile << ", ";
+	// 			}
+	// 			outfile << std::endl;
+	// 		}
+	// 		outfile.close();
+	// 		std::cout << "Interference matrix written to " << filename << std::endl;
+	// 	}
+	// 	else
+	// 	{
+	// 		std::cerr << "Unable to open file: " << filename << std::endl;
+	// 	}
+
+	// 	// 释放设备内存
+	// 	cudaFree(d_interference_matrix);
+	// 	delete[] h_interference_matrix;
+	// }
+
 	torch::Tensor getDataTensor() const
 	{
-		std::vector<std::complex<double>> host_array(data_length * n_gls_);
-		cudaMemcpy(host_array.data(), data_fix_, data_length * n_gls_ * sizeof(cuComplex), cudaMemcpyDeviceToHost);
-
-		// std::cout << "debug " << host_array[0] << std::endl;
-
-		torch::Tensor output = torch::empty({data_length * n_gls_}, dtype(torch::kComplexFloat));
-		output.copy_(torch::from_blob(host_array.data(), {data_length * n_gls_}, torch::kComplexFloat));
-
-		// cudaFree(host_array);
+		torch::Tensor output = torch::from_blob(data_fix_, {data_length * n_gls_}, torch::TensorOptions().dtype(torch::kComplexFloat).device(torch::kCUDA)).clone();
 
 		return output;
 	}
 
 	torch::Tensor getPhspTensor() const
 	{
-		std::vector<std::complex<double>> host_array(phsp_length * n_gls_);
-		cudaMemcpy(host_array.data(), phsp_fix_, phsp_length * n_gls_ * sizeof(cuComplex), cudaMemcpyDeviceToHost);
-
-		// std::cout << "debug " << host_array[0] << std::endl;
-
-		torch::Tensor output = torch::empty({phsp_length * n_gls_}, dtype(torch::kComplexFloat));
-		output.copy_(torch::from_blob(host_array.data(), {phsp_length * n_gls_}, torch::kComplexFloat));
-
-		// cudaFree(host_array);
+		torch::Tensor output = torch::from_blob(phsp_fix_, {phsp_length * n_gls_}, torch::TensorOptions().dtype(torch::kComplexFloat).device(torch::kCUDA)).clone();
 
 		return output;
+	}
+
+	torch::Tensor getTruthTensor() const
+	{
+		const auto &data_files = config_parser_.getDataFiles();
+		if (data_files.count("phsp_truth") > 0)
+		{
+			std::vector<std::string> particles_names;
+			for (const auto &particle : particles_)
+			{
+				particles_names.push_back(particle.name);
+			}
+
+			std::cout << "Reading phase space truth samples..." << std::endl;
+			std::map<std::string, std::vector<LorentzVector>> Vp4_truth = readMomentaFromDat(data_files.at("phsp_truth"), config_parser_.getDataOrder(), particles_names);
+			std::cout << "Phase space truth events: " << Vp4_truth.begin()->second.size() << std::endl;
+			std::cout << "Calculating phase space truth amplitudes..." << std::endl;
+			cuComplex *truth_fix = calculateAmplitudes(Vp4_truth);
+			int truth_length = Vp4_truth.begin()->second.size() * n_polar_;
+
+			torch::Tensor output = torch::from_blob(truth_fix, {truth_length * n_gls_}, torch::TensorOptions().dtype(torch::kComplexFloat).device(torch::kCUDA)).clone();
+
+			cudaFree(truth_fix);
+
+			return output;
+		}
+		else
+		{
+			std::cerr << "No phsp_truth data file specified in the configuration." << std::endl;
+			return torch::empty({0}, torch::TensorOptions().dtype(torch::kComplexFloat).device(torch::kCUDA));
+		}
 	}
 
 	torch::Tensor getBkgTensor() const
 	{
-		std::vector<std::complex<double>> host_array(bkg_length);
-		cudaMemcpy(host_array.data(), bkg_fix_, bkg_length * sizeof(cuComplex), cudaMemcpyDeviceToHost);
-
-		// std::cout << "debug " << host_array[0] << std::endl;
-
-		torch::Tensor output = torch::empty({bkg_length}, dtype(torch::kComplexFloat));
-		output.copy_(torch::from_blob(host_array.data(), {bkg_length}, torch::kComplexFloat));
-
-		// cudaFree(host_array);
+		torch::Tensor output = torch::from_blob(bkg_fix_, {bkg_length * n_gls_}, torch::TensorOptions().dtype(torch::kComplexFloat).device(torch::kCUDA)).clone();
 
 		return output;
 	}
 
-	std::vector<std::vector<int>> getConstraints() const
+	torch::Tensor getBkgWeightsTensor() const
+	{
+		if (bkg_weights_ != nullptr && bkg_length > 0)
+		{
+			torch::Tensor output = torch::from_blob(bkg_weights_, {bkg_length}, torch::TensorOptions().dtype(torch::kFloat).device(torch::kCUDA)).clone();
+			return output;
+		}
+		else
+		{
+			return torch::empty({0}, torch::TensorOptions().dtype(torch::kFloat).device(torch::kCUDA));
+		}
+	}
+
+	std::vector<std::vector<int>> getConstraintsIndex() const
 	{
 		return con_trans_id_;
+	}
+
+	std::vector<std::vector<std::pair<double, double>>> getConstraintsValues() const
+	{
+		std::vector<std::vector<std::pair<double, double>>> output;
+		for (const auto &vec : con_trans_values_)
+		{
+			std::vector<std::pair<double, double>> temp;
+			for (const auto &val : vec)
+			{
+				temp.emplace_back(std::make_pair(real(val), imag(val)));
+			}
+			output.push_back(temp);
+		}
+		return output;
+	}
+
+	int getNPolarizations() const
+	{
+		return n_polar_;
 	}
 
 	std::vector<std::string> getAmplitudeNames() const
@@ -1499,11 +1601,14 @@ private:
 	cuComplex *bkg_fix_;
 	double *bkg_weights_ = nullptr;
 	int bkg_length;
+	// cuComplex *truth_fix_;
+	// int truth_length;
 
 	// 四动量数据
 	std::map<std::string, std::vector<LorentzVector>> Vp4_data_;
 	std::map<std::string, std::vector<LorentzVector>> Vp4_phsp_;
 	std::map<std::string, std::vector<LorentzVector>> Vp4_bkg_;
+	// std::map<std::string, std::vector<LorentzVector>> Vp4_truth_;
 
 	// amplitude 信息
 	std::vector<std::string> amplitude_names_;
@@ -1528,10 +1633,10 @@ private:
 		// std::string config_file = "config.yml";
 		// config_parser_(config_file);
 		std::cout << "Reading config file: " << config_file << std::endl;
-		std::cout << "  Particles: " << config_parser_.getParticles().size() << std::endl;
-		std::cout << "  Decay chains: " << config_parser_.getDecayChains().size() << std::endl;
-		std::cout << "  Resonances: " << config_parser_.getResonances().size() << std::endl;
-		std::cout << "  Constraints: " << config_parser_.getConstraints().size() << std::endl;
+		std::cout << "Particles: " << config_parser_.getParticles().size() << std::endl;
+		std::cout << "Decay chains: " << config_parser_.getDecayChains().size() << std::endl;
+		std::cout << "Resonances: " << config_parser_.getResonances().size() << std::endl;
+		std::cout << "Constraints: " << config_parser_.getConstraints().size() << std::endl;
 
 		// 初始化粒子信息
 		initializeParticles();
@@ -1586,6 +1691,14 @@ private:
 			}
 		}
 
+		// 计算分支比
+		// if (data_files.count("phsp_truth") > 0)
+		// {
+		// 	std::map<std::string, std::vector<LorentzVector>> Vp4_truth = readMomentaFromDat(data_files.at("phsp_truth"), config_parser_.getDataOrder(), particles_names);
+		// 	truth_fix_ = calculateAmplitudes(Vp4_truth);
+		// 	truth_length = Vp4_truth.begin()->second.size() * n_polar_;
+		// }
+
 		NLLFunction::setConstraints(con_trans_id_, con_trans_values_);
 
 		std::cout << "Number of partial waves (n_gls_): " << n_gls_ << std::endl;
@@ -1611,11 +1724,12 @@ private:
 		{
 			if (particle.spin > 0)
 			{
-				n_polar_ *= (2 * particle.spin + 1);
+				// n_polar_ *= (2 * particle.spin + 1);
+				n_polar_ *= particle.spin;
 			}
 		}
 
-		std::cout << "Total polarization states (n_polar_): " << n_polar_ << std::endl;
+		std::cout << "polarization: " << n_polar_ << std::endl;
 	}
 
 	void initializeDecayChains()
@@ -1896,7 +2010,7 @@ private:
 		}
 	}
 
-	cuComplex *calculateAmplitudes(const std::map<std::string, std::vector<LorentzVector>> &Vp4)
+	cuComplex *calculateAmplitudes(const std::map<std::string, std::vector<LorentzVector>> &Vp4) const
 	{
 		cuComplex *d_all_amplitudes = nullptr;
 		const size_t n_events = Vp4.begin()->second.size();
@@ -2015,10 +2129,16 @@ PYBIND11_MODULE(ctpwa, m)
 		.def(pybind11::init<>())
 		.def("getNLL", &analysis::getNLL)
 		.def("getNVector", &analysis::getNVector)
-		.def("writeWeightFile", &analysis::writeWeightFile)
+		.def("getSLVectors", &analysis::getSLVectors)
+		.def("writeResult", &analysis::writeResult)
+		// .def("writeInterference", &analysis::writeInterference)
 		.def("getDataTensor", &analysis::getDataTensor)
 		.def("getPhspTensor", &analysis::getPhspTensor)
+		.def("getTruthTensor", &analysis::getTruthTensor)
 		.def("getBkgTensor", &analysis::getBkgTensor)
-		.def("getConjugatePairs", &analysis::getConstraints)
-		.def("getAmplitudeNames", &analysis::getAmplitudeNames);
+		.def("getBkgWeightsTensor", &analysis::getBkgWeightsTensor)
+		.def("getConstraintsIndex", &analysis::getConstraintsIndex)
+		.def("getConstraintsValues", &analysis::getConstraintsValues)
+		.def("getAmplitudeNames", &analysis::getAmplitudeNames)
+		.def("getNPolarizations", &analysis::getNPolarizations);
 }

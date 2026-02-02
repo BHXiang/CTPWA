@@ -5,6 +5,6 @@
 #include "Figure.cu"
 #include "ComputeNLL.cu"
 #include "ComputeGrad.cu"
-#include "ComputeWeight.cu"
+#include "ComputeResults.cu"
 #include "Config.cu"
 #include "PartialWaveMain.cu"
