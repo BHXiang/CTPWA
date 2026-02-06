@@ -1,5 +1,5 @@
 // main.cu
-#include "helicity.cu"
+#include "Amplitude.cu"
 #include "Resonance.cu"
 #include "AmpGen.cu"
 #include "Figure.cu"

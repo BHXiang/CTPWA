@@ -1,7 +1,7 @@
 #ifndef FIGURE_CUH
 #define FIGURE_CUH
 
-#include <helicity.cuh>
+#include <Amplitude.cuh>
 #include <AmpGen.cuh>
 
 #include <vector>

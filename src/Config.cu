@@ -2,6 +2,30 @@
 #include <iostream>
 #include <fstream>
 #include <algorithm>
+#include <sstream>
+#include <string>
+
+float transJValue(const std::string &str)
+{
+    // 先检查是否有斜杠
+    if (str.find('/') != std::string::npos)
+    {
+        size_t slash_pos = str.find('/');
+        float num = std::stof(str.substr(0, slash_pos));
+        float den = std::stof(str.substr(slash_pos + 1));
+        return (den != 0) ? num / den : 0.0f;
+    }
+
+    // 尝试直接转换为浮点数
+    std::stringstream ss(str);
+    float value;
+    if (ss >> value)
+    {
+        return value;
+    }
+
+    return 0.0f; // 默认值
+}
 
 ConfigParser::ConfigParser(const std::string &config_file)
 {
@@ -298,7 +322,9 @@ void ConfigParser::parseParticles(const YAML::Node &node)
         Particle particle;
         particle.name = name;
         // particle.spin = props["J"].as<int>();
-        particle.spin = 2 * props["J"].as<int>() + 1;
+        // particle.spin = 2 * props["J"].as<float>() + 1;
+        std::string spin_str = props["J"].as<std::string>();
+        particle.spin = static_cast<int>(2 * transJValue(spin_str) + 1);
         particle.parity = props["P"].as<int>();
         particle.mass = props["mass"].as<double>();
 
@@ -388,7 +414,10 @@ void ConfigParser::parseDecayChains(const YAML::Node &node)
                             for (const auto &jp : spin_pair.first)
                             {
                                 if (jp["J"])
-                                    spin_chain.spin_parity.push_back(jp["J"].as<int>());
+                                {
+                                    std::string j_str = jp["J"].as<std::string>();
+                                    spin_chain.spin_parity.push_back(2 * transJValue(j_str) + 1);
+                                }
                                 if (jp["P"])
                                     spin_chain.spin_parity.push_back(jp["P"].as<int>());
                             }
@@ -421,7 +450,7 @@ void ConfigParser::parseResonances(const YAML::Node &node)
         ResonanceConfig res;
         res.name = name;
         // res.J = props["J"].as<int>();
-        res.J = 2 * props["J"].as<int>() + 1;
+        res.J = static_cast<int>(2 * transJValue(props["J"].as<std::string>()) + 1);
         res.P = props["P"].as<int>();
         res.type = props["model"].as<std::string>();
         res.parameters = props["parameters"].as<std::vector<double>>();

@@ -12,24 +12,68 @@ Amp2BD::Amp2BD(std::array<int, 3> jvalues, std::array<int, 3> parities)
     spinOrbitCombinations_ = ComSL(jvalues, parities);
 }
 
+// std::vector<SL> Amp2BD::ComSL(const std::array<int, 3> &spins, const std::array<int, 3> &parities)
+// {
+//     std::vector<SL> combinations;
+//     auto [s1, s2, s3] = spins;
+//     auto [p1, p2, p3] = parities;
+
+//     const int S_min = std::abs(s2 - s3);
+//     const int S_max = s2 + s3;
+//     for (int S = S_min; S <= S_max; ++S)
+//     {
+//         const int L_min = std::abs(s1 - S);
+//         const int L_max = s1 + S;
+//         for (int L = L_min; L <= L_max; ++L)
+//         {
+//             const int sign = (L % 2 == 0) ? 1 : -1;
+//             if (p1 == p2 * p3 * sign)
+//             {
+//                 combinations.emplace_back(S, L);
+//             }
+//         }
+//     }
+//     return combinations;
+// }
+
 std::vector<SL> Amp2BD::ComSL(const std::array<int, 3> &spins, const std::array<int, 3> &parities)
 {
     std::vector<SL> combinations;
-    auto [s1, s2, s3] = spins;
+
+    // 将 2J+1 转换回 J*2 的形式（避免浮点数）
+    // spins[i] = 2*J_i + 1 => 2*J_i = spins[i] - 1
+    auto [s1_2j, s2_2j, s3_2j] = spins;
+
+    // 转换为两倍的自旋值，以便整数运算
+    int two_j1 = s1_2j - 1; // 2 * J1
+    int two_j2 = s2_2j - 1; // 2 * J2
+    int two_j3 = s3_2j - 1; // 2 * J3
+
     auto [p1, p2, p3] = parities;
 
-    const int S_min = std::abs(s2 - s3);
-    const int S_max = s2 + s3;
-    for (int S = S_min; S <= S_max; ++S)
+    // S（总自旋）的范围：|J2 - J3| ≤ S ≤ J2 + J3
+    // 使用两倍的值进行计算
+    const int two_S_min = std::abs(two_j2 - two_j3);
+    const int two_S_max = two_j2 + two_j3;
+
+    for (int two_S = two_S_min; two_S <= two_S_max; two_S += 2)
     {
-        const int L_min = std::abs(s1 - S);
-        const int L_max = s1 + S;
-        for (int L = L_min; L <= L_max; ++L)
+        // L（轨道角动量）的范围：|J1 - S| ≤ L ≤ J1 + S
+        const int two_L_min = std::abs(two_j1 - two_S);
+        const int two_L_max = two_j1 + two_S;
+
+        for (int two_L = two_L_min; two_L <= two_L_max; two_L += 2)
         {
+            // 宇称条件：P1 = P2 * P3 * (-1)^L
+            // 注意：L 是轨道角动量，不是两倍值
+            int L = two_L / 2; // 实际的轨道角动量量子数
             const int sign = (L % 2 == 0) ? 1 : -1;
+
             if (p1 == p2 * p3 * sign)
             {
-                combinations.emplace_back(S, L);
+                // 存储实际的自旋量子数（不是两倍值）
+                // int S = two_S / 2; // 实际的总自旋量子数
+                combinations.emplace_back(two_S + 1, L);
             }
         }
     }
@@ -125,7 +169,8 @@ int AmpCasDecay::computeNPolarizations(const std::map<std::string, std::vector<L
     for (const auto &[name, _] : finalMomenta)
     {
         int particleSpin = particleMap_.at(name).spin;
-        nPolar *= (2 * particleSpin + 1);
+        // nPolar *= (2 * particleSpin + 1);
+        nPolar *= particleSpin;
     }
 
     return nPolar;
@@ -300,13 +345,13 @@ void AmpCasDecay::computeSLAmps(const std::map<std::string, std::vector<LorentzV
     cudaMalloc(&d_slamps_, nEvents_ * nPolarizations_ * nSLCombs_ * sizeof(thrust::complex<double>));
 
     // 准备设备端的衰变链信息
-    int *d_dj, *d_dj1, *d_dj2;
-    cudaMalloc(&d_dj, decayChain_.size() * sizeof(int));
-    cudaMalloc(&d_dj1, decayChain_.size() * sizeof(int));
-    cudaMalloc(&d_dj2, decayChain_.size() * sizeof(int));
-    cudaMemcpy(d_dj, host_dj.data(), decayChain_.size() * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_dj1, host_dj1.data(), decayChain_.size() * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_dj2, host_dj2.data(), decayChain_.size() * sizeof(int), cudaMemcpyHostToDevice);
+    int *d_dimj, *d_dimj1, *d_dimj2;
+    cudaMalloc(&d_dimj, decayChain_.size() * sizeof(int));
+    cudaMalloc(&d_dimj1, decayChain_.size() * sizeof(int));
+    cudaMalloc(&d_dimj2, decayChain_.size() * sizeof(int));
+    cudaMemcpy(d_dimj, host_dj.data(), decayChain_.size() * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_dimj1, host_dj1.data(), decayChain_.size() * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_dimj2, host_dj2.data(), decayChain_.size() * sizeof(int), cudaMemcpyHostToDevice);
 
     // 将衰变节点复制到设备
     cudaMalloc(&d_decayNodes_, decayChain_.size() * sizeof(DecayNode));
@@ -330,9 +375,11 @@ void AmpCasDecay::computeSLAmps(const std::map<std::string, std::vector<LorentzV
     int amp_size = 0;
     for (size_t i = 0; i < decayChain_.size(); ++i)
     {
-        int dj = host_dj[i];
-        int dj1 = host_dj1[i];
-        int dj2 = host_dj2[i];
+        int dim_j = host_dj[i];
+        int dim_j1 = host_dj1[i];
+        int dim_j2 = host_dj2[i];
+
+        // std::cout << "Decay node " << i << ": dj=" << dim_j << ", dj1=" << dim_j1 << ", dj2=" << dim_j2 << std::endl;
 
         // int tmp = (2 * dj + 1) * (2 * dj1 + 1) * (2 * dj2 + 1);
 
@@ -340,9 +387,9 @@ void AmpCasDecay::computeSLAmps(const std::map<std::string, std::vector<LorentzV
         //     amp_size = tmp;
         // amp_size += (2 * dj + 1) * (2 * dj1 + 1) * (2 * dj2 + 1) + (2 * dj1 + 1) * (2 * dj1 + 1) + (2 * dj2 + 1) * (2 * dj2 + 1);
 
-        int dim_j = 2 * dj + 1;
-        int dim_j1 = 2 * dj1 + 1;
-        int dim_j2 = 2 * dj2 + 1;
+        // int dim_j = 2 * dj + 1;
+        // int dim_j1 = 2 * dj1 + 1;
+        // int dim_j2 = 2 * dj2 + 1;
 
         int total_amp_size = dim_j * dim_j1 * dim_j2;
         int trans1_size = dim_j1 * dim_j1;
@@ -352,7 +399,8 @@ void AmpCasDecay::computeSLAmps(const std::map<std::string, std::vector<LorentzV
 
         size_t total_size = 2 * total_amp_size + trans1_size + trans2_size + massive_shared_size;
 
-        amp_size += 2 * (2 * dj + 1) * (2 * dj1 + 1) * (2 * dj2 + 1) + total_size;
+        // amp_size += 2 * (2 * dj + 1) * (2 * dj1 + 1) * (2 * dj2 + 1) + total_size;
+        amp_size += 2 * dim_j * dim_j1 * dim_j2 + total_size;
     }
 
     int batch_size = 1000000;
@@ -381,10 +429,7 @@ void AmpCasDecay::computeSLAmps(const std::map<std::string, std::vector<LorentzV
         int numBlocks = (nEvents_ + blockSize - 1) / blockSize;
         // computeSLAmpKernel<<<gridDim, blockDim, sharedMemSize>>>(
         // computeSLAmpKernel<<<gridDim, blockDim>>>(
-        computeSLAmpKernel<<<numBlocks, blockSize, sharedMemSize>>>(
-            d_slamps_, d_amp_buffer, d_momenta_, d_decayNodes_, d_dj, d_dj1, d_dj2,
-            d_slCombination_, nSLCombs_, nEvents_, nPolarizations_, decayChain_.size(),
-            amp_size * nSLCombs_, n_events, start);
+        computeSLAmpKernel<<<numBlocks, blockSize, sharedMemSize>>>(d_slamps_, d_amp_buffer, d_momenta_, d_decayNodes_, d_dimj, d_dimj1, d_dimj2, d_slCombination_, nSLCombs_, nEvents_, nPolarizations_, decayChain_.size(), amp_size * nSLCombs_, n_events, start);
 
         cudaDeviceSynchronize();
 
@@ -399,9 +444,9 @@ void AmpCasDecay::computeSLAmps(const std::map<std::string, std::vector<LorentzV
     }
 
     // 清理临时设备内存
-    cudaFree(d_dj);
-    cudaFree(d_dj1);
-    cudaFree(d_dj2);
+    cudaFree(d_dimj);
+    cudaFree(d_dimj1);
+    cudaFree(d_dimj2);
 }
 
 // 实现步长计算函数（逻辑不变，步长为int）
@@ -530,7 +575,7 @@ __global__ void computeSLAmpKernel(thrust::complex<double> *d_amp,
                                    thrust::complex<double> *d_amp_buffer,
                                    const DeviceMomenta *d_momenta,
                                    const DecayNode *d_decayNodes,
-                                   const int *d_dj, const int *d_dj1, const int *d_dj2,
+                                   const int *d_dimj, const int *d_dimj1, const int *d_dimj2,
                                    const SL *d_slCombination,
                                    int num_sl,
                                    int num_events,
@@ -572,9 +617,9 @@ __global__ void computeSLAmpKernel(thrust::complex<double> *d_amp,
             const DecayNode &node = d_decayNodes[nodeIdx];
             const SL &sl = d_slCombination[nodeIdx + slIdx * decayChain_size];
 
-            int dj = d_dj[nodeIdx];
-            int dj1 = d_dj1[nodeIdx];
-            int dj2 = d_dj2[nodeIdx];
+            int dim_j = d_dimj[nodeIdx];
+            int dim_j1 = d_dimj1[nodeIdx];
+            int dim_j2 = d_dimj2[nodeIdx];
 
             // 直接从设备内存获取四动量
             LorentzVector pDaug1 = d_momenta->getMomentum(start_events + eventIdx, node.daug1_idx);
@@ -584,19 +629,17 @@ __global__ void computeSLAmpKernel(thrust::complex<double> *d_amp,
             // printf("Event %d, SL %d, Node %d: pDaug1 = (%f, %f, %f, %f), pDaug2 = (%f, %f, %f, %f)\n", eventIdx, slIdx, nodeIdx, pDaug1.E, pDaug1.Px, pDaug1.Py, pDaug1.Pz, pDaug2.E, pDaug2.Px, pDaug2.Py, pDaug2.Pz);
 
             // node振幅
-            size_t amp_size = (2 * dj + 1) * (2 * dj1 + 1) * (2 * dj2 + 1);
+            size_t amp_size = dim_j * dim_j1 * dim_j2;
             thrust::complex<double> *node_amp = &event_buffer[buffer_used];
             buffer_used += amp_size;
 
             // 计算振幅
-            // pwahelicity_device(node_amp, pDaug1, dj1, pDaug2, dj2, dj, sl.S, sl.L);
-            pwahelicity_shared(node_amp, pDaug1, dj1, pDaug2, dj2, dj, sl.S, sl.L, &event_buffer[buffer_used]);
-            // pwahelicity_shared(node_amp, pDaug1, dj1, pDaug2, dj2, dj, sl.S, sl.L, shared_buf);
+            pwa_amp(node_amp, pDaug1, dim_j1, pDaug2, dim_j2, dim_j, sl.S, sl.L, &event_buffer[buffer_used]);
             // int max_dim = max(2 * dj + 1, 2 * dj2 + 1);
             // shared_used += (2 * dj1 + 1) * (2 * dj1 + 1) + (2 * dj2 + 1) * (2 * dj2 + 1) + 2 * (2 * max_dim + 1) * (2 * max_dim + 1) + 2 * (2 * dj + 1) * (2 * dj1 + 1) * (2 * dj2 + 1);
-            int dim_j = 2 * dj + 1;
-            int dim_j1 = 2 * dj1 + 1;
-            int dim_j2 = 2 * dj2 + 1;
+            // int dim_j = 2 * dj + 1;
+            // int dim_j1 = 2 * dj1 + 1;
+            // int dim_j2 = 2 * dj2 + 1;
 
             int total_amp_size = dim_j * dim_j1 * dim_j2;
             int trans1_size = dim_j1 * dim_j1;
@@ -607,20 +650,21 @@ __global__ void computeSLAmpKernel(thrust::complex<double> *d_amp,
 
             buffer_used += 2 * total_amp_size + trans1_size + trans2_size + massive_shared_size;
 
-            // for (int i = 0; i < 2 * dj + 1; i++)
+            // for (int i = 0; i < dim_j; i++)
             // {
-            //     for (int j = 0; j < 2 * dj1 + 1; j++)
+            //     for (int j = 0; j < dim_j1; j++)
             //     {
-            //         for (int k = 0; k < 2 * dj2 + 1; k++)
+            //         for (int k = 0; k < dim_j2; k++)
             //         {
-            //             int idx = i * (2 * dj1 + 1) * (2 * dj2 + 1) + j * (2 * dj2 + 1) + k;
+            //             int idx = i * dim_j1 * dim_j2 + j * dim_j2 + k;
             //             printf("Event %d, sl %d, Node %d: Amp[%d,%d,%d] = (%f, %f i)\n", eventIdx, slIdx, nodeIdx, i, j, k, node_amp[idx].real(), node_amp[idx].imag());
             //             // printf("Event %d, sl %d, Node %d: Amp[%d,%d,%d] = (%f, %f i)\n", eventIdx, slIdx, nodeIdx, i, j, k, d_amp_buffer[idx].real(), d_amp_buffer[idx].imag());
             //         }
             //     }
             // }
 
-            int nodeAmpShape[3] = {2 * dj + 1, 2 * dj1 + 1, 2 * dj2 + 1};
+            // int nodeAmpShape[3] = {2 * dj + 1, 2 * dj1 + 1, 2 * dj2 + 1};
+            int nodeAmpShape[3] = {dim_j, dim_j1, dim_j2};
             int nodeAmpRank = 3;
 
             if (nodeIdx == 0)
@@ -628,9 +672,9 @@ __global__ void computeSLAmpKernel(thrust::complex<double> *d_amp,
                 // 第一个节点，直接作为总振幅
                 currentAmp = node_amp;
                 currentAmpRank = 3;
-                currentAmpShape[0] = 2 * dj + 1;
-                currentAmpShape[1] = 2 * dj1 + 1;
-                currentAmpShape[2] = 2 * dj2 + 1;
+                currentAmpShape[0] = dim_j;
+                currentAmpShape[1] = dim_j1;
+                currentAmpShape[2] = dim_j2;
 
                 // 设置标签 [mother, daug1, daug2]
                 ampLabels[0] = node.mother_idx;

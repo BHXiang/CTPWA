@@ -1520,10 +1520,10 @@ public:
 				particles_names.push_back(particle.name);
 			}
 
-			std::cout << "Reading phase space truth samples..." << std::endl;
+			// std::cout << "Reading phase space truth samples..." << std::endl;
 			std::map<std::string, std::vector<LorentzVector>> Vp4_truth = readMomentaFromDat(data_files.at("phsp_truth"), config_parser_.getDataOrder(), particles_names);
 			std::cout << "Phase space truth events: " << Vp4_truth.begin()->second.size() << std::endl;
-			std::cout << "Calculating phase space truth amplitudes..." << std::endl;
+			// std::cout << "Calculating phase space truth amplitudes..." << std::endl;
 			cuComplex *truth_fix = calculateAmplitudes(Vp4_truth);
 			int truth_length = Vp4_truth.begin()->second.size() * n_polar_;
 
@@ -1858,7 +1858,11 @@ private:
 					cas.addDecay(Amp2BD(spins, parities), step.mother, step.daughters[0], step.daughters[1]);
 
 					// 输出decay chain结构
-					std::cout << step.mother << "(" << spins[0];
+					std::cout << step.mother << "(";
+					if (spins[0] % 2 != 0)
+						std::cout << (spins[0] - 1) / 2;
+					else
+						std::cout << spins[0] - 1 << "/2";
 					if (parities[0] == 1)
 						std::cout << "+)";
 					else if (parities[0] == -1)
@@ -1866,12 +1870,15 @@ private:
 					std::cout << "->";
 					for (int i = 0; i < step.daughters.size(); i++)
 					{
-						std::cout << step.daughters[i] << "(" << spins[i + 1];
+						std::cout << step.daughters[i] << "(";
+						if (spins[i + 1] % 2 != 0)
+							std::cout << (spins[i + 1] - 1) / 2;
+						else
+							std::cout << spins[i + 1] - 1 << "/2";
 						if (parities[i + 1] == 1)
 							std::cout << "+)";
 						else if (parities[i + 1] == -1)
-							std::cout
-								<< "-)";
+							std::cout << "-)";
 					}
 					std::cout << ", ";
 				}
@@ -1883,7 +1890,7 @@ private:
 					std::cout << "{";
 					for (auto sl : slcomb)
 					{
-						std::cout << "(" << sl.S << ", " << sl.L << ")";
+						std::cout << "(" << (sl.S - 1) / 2.0 << ", " << sl.L << ")";
 					}
 					std::cout << "}";
 				}

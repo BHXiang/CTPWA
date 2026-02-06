@@ -2,7 +2,7 @@
 #define AMPGEN_CUH
 
 #include <Resonance.cuh>
-#include <helicity.cuh>
+#include <Amplitude.cuh>
 #include <Config.cuh>
 
 #include <unordered_map>
@@ -21,7 +21,7 @@
 // 自旋-轨道组合结构体
 struct SL
 {
-    int S;
+    int S; // 2s+1
     int L;
     __host__ __device__ SL(int s = 0, int l = 0) : S(s), L(l) {}
 };

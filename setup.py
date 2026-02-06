@@ -92,7 +92,7 @@ extension = CUDAExtension(
             '-D_GLIBCXX_USE_CXX11_ABI=1',  # 确保与 PyTorch ABI 兼容
         ],
         'nvcc': [
-            '-arch=sm_120',  # 根据您的GPU架构调整（A100: sm_80, V100: sm_70, 3090: sm_86）
+            # '-arch=sm_120',  # 根据您的GPU架构调整（A100: sm_80, V100: sm_70, 3090: sm_86）
             '--expt-relaxed-constexpr',
             '-Xcompiler', '-fPIC',
             '-std=c++17',
