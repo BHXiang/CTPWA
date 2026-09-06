@@ -3652,6 +3652,12 @@ void AmpCalc::computeUnifiedHessian(
                 cudaDeviceSynchronize();
             }
 
+            if (hprof) {
+                auto t_s3mid = std::chrono::high_resolution_clock::now();
+                printf("[PROF] UH gpu=%d stage3-blkmixed: %.2f ms\n", gpu,
+                    std::chrono::duration<double, std::milli>(t_s3mid - t_s3).count());
+                fflush(stdout);
+            }
             // Cross-block mixed
             for (size_t bi = 0; bi < blocks_.size(); ++bi) {
                 auto& blkA = blocks_[bi];
