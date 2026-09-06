@@ -563,98 +563,156 @@ __device__ void addBfQ0HessianTerms(
 // ============================================================
 
 // ============================================================================
-// BWR 解析特化（v1: 9 点中心差分, 与字节码同数学 F）
-//   F = S(m,m0,g0; Lmin) × Bf(Lvtx)   [has_bf 时]
-//   S = (x+iy)/s; x=m0²−m²; y=m0·γ; s=x²+y²
-//   γ = g0·(q/q0)^{2Lmin+1}·(m0/m)·Bf²(Lmin,q,q0,d)
-//   Bf² = N_L(q0·d)/N_L(q·d), N_L(z)=Σ_k c_k z^{2k}
-// 资格(bwr_flag): BWR, param_count==2, q0 链子质量与 θ 无关 → 差分精确。
 // ============================================================================
-__device__ double bwrPolyN(int L, double z) {
-    // N_L(z) 系数表（与 ResModel.cu bfPolyCoeffs 一致, L≤5）
-    if (L < 0 || L > 5) return 1.0;
-    double z2 = z * z, pw = 1.0, sum = 0.0;
-    switch (L) {
-        case 0: sum = 1.0; break;
-        case 1: sum = 1.0 + z2; break;
-        case 2: sum = 9.0 + 3.0 * z2 + z2 * z2; break;
-        case 3: sum = 225.0 + 45.0 * z2 + 6.0 * z2 * z2 + z2 * z2 * z2; break;
-        case 4: sum = 11025.0 + 1575.0 * z2 + 135.0 * z2 * z2 + 10.0 * z2 * z2 * z2 + z2 * z2 * z2 * z2; break;
-        default: {  // L=5
-            double p2 = z2 * z2, p3 = p2 * z2, p4 = p3 * z2, p5 = p4 * z2;
-            sum = 893025.0 + 99225.0 * z2 + 6300.0 * p2 + 210.0 * p3 + 15.0 * p4 + p5;
+// BWR 解析二阶特化（纯闭式; 数学与字节码同 F）
+//   F = S × Bv          (has_bf 时顶点 Bf; 否则 F = S)
+//   S = (x+iy)/s;  x = m0²−m²;  y = m0·γ;  s = x²+y²
+//   γ = g0·(q/q0)^{2Lmin+1}·(m0/m)·Bf²(Lmin);  Bf² = N(q0·d)/N(q·d)
+//   Bv = √(N_{Lvtx}(q0·d)/N_{Lvtx}(q·d))
+// 自由参数 θ = (m0, g0); q0 链子质量 (q0m1, q0m2) 与 θ 无关（bwr_flag 资格保证）。
+// 全链对 m0 求导: q0 → N → γ → y → s → 商;  g0 仅经 γ 线性出现。
+// ============================================================================
+
+// N_L(z) = Σ_k c_k z^{2k} 及其对 z 的一/二阶（系数与 ResModel bfPolyCoeffs 一致）
+__device__ void bwrN(int L, double z, double& n, double& np, double& npp) {
+    n = 1.0; np = 0.0; npp = 0.0;
+    if (L < 0 || L > 5) return;
+    static const double C[6][6] = {
+        {1,0,0,0,0,0}, {1,1,0,0,0,0}, {9,3,1,0,0,0},
+        {225,45,6,1,0,0}, {11025,1575,135,10,1,0},
+        {893025,99225,6300,210,15,1}};
+    double z2 = z * z;
+    n = 0.0;
+    double pw = 1.0;    // z^{2k}
+    double pw2 = 1.0;   // z^{2k-2}（k=1 时 = z^0）
+    for (int k = 0; k <= L; ++k) {
+        double c = C[L][k];
+        if (k == 0) {
+            n += c;
+        } else {
+            pw *= z2;
+            n += c * pw;
+            np += c * (2.0 * k) * pw2 * z;              // 2k·c·z^{2k-1}
+            npp += c * (2.0 * k) * (2.0 * k - 1.0) * pw2; // 2k(2k-1)·c·z^{2k-2}
+            pw2 *= z2;
         }
     }
-    return sum;
 }
 
-__device__ double2 bwrFv(double m0, double g0, double m, double q,
-                         double q0m1, double q0m2, double dd,
-                         int Lmin, int Lvtx, bool has_bf) {
-    double A = (q0m1 + q0m2) * (q0m1 + q0m2);
-    double B = (q0m1 - q0m2) * (q0m1 - q0m2);
-    double q0s = (m0 * m0 - A) * (m0 * m0 - B);
-    double q0 = q0s > 0.0 ? sqrt(q0s) / (2.0 * m0) : 1e-3;
-    double Ni = bwrPolyN(Lmin, q * dd), N0i = bwrPolyN(Lmin, q0 * dd);
-    // (q/q0)^(2Lmin+1): 整数幂
-    int e = 2 * Lmin + 1;
-    double pw = 1.0;
-    for (int k = 0; k < e; ++k) pw *= (q / q0);
-    double gamma = g0 * pw * (m0 / m) * (N0i / Ni);
-    double x = m0 * m0 - m * m;
-    double y = m0 * gamma;
-    double s = x * x + y * y;
-    double inv = 1.0 / s;
-    double2 F = make_double2(x * inv, y * inv);
-    if (has_bf) {
-        double Nv = bwrPolyN(Lvtx, q * dd), Nv0 = bwrPolyN(Lvtx, q0 * dd);
-        double bv = sqrt(Nv0 / Nv);
-        F.x *= bv;
-        F.y *= bv;
-    }
-    return F;
-}
-
-// 9 点中心差分 → F/dF(2)/d²F(4 上三角含混合), 布局与 evalCustomAll 一致
-// (P_r=2: dFr[0]=∂m0, dFr[1]=∂g0; d2Fr[j*2+k] 全 2×2)
+// 解析 F/dF/d²F: dF[0]=∂m0, dF[1]=∂g0; d2F[j*2+k]（对称 2×2, 与 evalCustomAll 同布局）
 __device__ void bwrSpecEval(double m0, double g0, double m, double q,
                             double q0m1, double q0m2, double dd,
                             int Lmin, int Lvtx, bool has_bf,
                             double& Fr, double& Fi,
                             double* dFr, double* dFi,
                             double* d2Fr, double* d2Fi) {
-    double hm = 3e-5 * fmax(fabs(m0), 0.5);
-    double hg = 3e-5 * fmax(fabs(g0), 0.01);
-    double2 f00 = bwrFv(m0, g0, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
-    double2 fpm = bwrFv(m0 + hm, g0, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
-    double2 fmm = bwrFv(m0 - hm, g0, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
-    double2 fpg = bwrFv(m0, g0 + hg, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
-    double2 fmg = bwrFv(m0, g0 - hg, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
-    double2 fpp = bwrFv(m0 + hm, g0 + hg, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
-    double2 fpm_ = bwrFv(m0 + hm, g0 - hg, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
-    double2 fmp = bwrFv(m0 - hm, g0 + hg, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
-    double2 fmm_ = bwrFv(m0 - hm, g0 - hg, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
-    Fr = f00.x; Fi = f00.y;
-    double inv2m = 0.5 / hm, inv2g = 0.5 / hg;
-    double invm2 = 1.0 / (hm * hm), invg2 = 1.0 / (hg * hg);
-    double invmg = 1.0 / (4.0 * hm * hg);
-    for (int c = 0; c < 2; ++c) {
-        double* fr = c ? dFi : dFr;
-        double* f2 = c ? d2Fi : d2Fr;
-        double a00 = c ? f00.y : f00.x;
-        double apm = c ? fpm.y : fpm.x, amm = c ? fmm.y : fmm.x;
-        double apg = c ? fpg.y : fpg.x, amg = c ? fmg.y : fmg.x;
-        double app = c ? fpp.y : fpp.x, ap_ = c ? fpm_.y : fpm_.x;
-        double amp = c ? fmp.y : fmp.x, am_ = c ? fmm_.y : fmm_.x;
-        fr[0] = (apm - amm) * inv2m;
-        fr[1] = (apg - amg) * inv2g;
-        f2[0 * 2 + 0] = (apm - 2.0 * a00 + amm) * invm2;
-        f2[0 * 2 + 1] = (app - ap_ - amp + am_) * invmg;   // ∂m∂g
-        f2[1 * 2 + 0] = f2[0 * 2 + 1];
-        f2[1 * 2 + 1] = (apg - 2.0 * a00 + amg) * invg2;
+    // ---- q0 = breakup(m0, q0m1, q0m2) 及其对 m0 的一/二阶 ----
+    double A = (q0m1 + q0m2) * (q0m1 + q0m2);
+    double B = (q0m1 - q0m2) * (q0m1 - q0m2);
+    double m02 = m0 * m0, m03 = m02 * m0, m04 = m02 * m02;
+    double Q2 = ((m02 - A) * (m02 - B)) / (4.0 * m02);   // q0²
+    // Q2' = (m0⁴−AB)/(2m0³);  Q2'' = (m0⁴+3AB)/(2m0⁴)
+    double q0 = Q2 > 0.0 ? sqrt(Q2) : 0.0;
+    double q0p = 0.0, q0pp = 0.0;
+    if (q0 > 1e-9) {
+        double Q2p = (m04 - A * B) / (2.0 * m03);
+        double Q2pp = (m04 + 3.0 * A * B) / (2.0 * m04);
+        q0p = Q2p / (2.0 * q0);
+        q0pp = (Q2pp - 2.0 * q0p * q0p) / (2.0 * q0);
     }
-}
+    double u = q0p / q0;                       // d(ln q0)/dm0
 
+    // ---- 内部 Bf² = N(q0·di)/N(q·di); di = has_bf? dd : 0（di=0 → Bf≡1）----
+    double di = has_bf ? dd : 0.0;
+    double Ni_v, Ni_p, Ni_pp, N0i_v, N0i_p, N0i_pp;
+    bwrN(Lmin, q * di, Ni_v, Ni_p, Ni_pp);
+    bwrN(Lmin, q0 * di, N0i_v, N0i_p, N0i_pp);
+    double I2 = N0i_v / Ni_v;
+    double N0i_m = N0i_p * di * q0p;                       // dN0i/dm0
+    double N0i_mm = N0i_pp * (di * q0p) * (di * q0p) + N0i_p * di * q0pp;
+    double lI = N0i_m / N0i_v;                             // (ln Bf²)'
+    double lIp = (N0i_mm * N0i_v - N0i_m * N0i_m) / (N0i_v * N0i_v);  // 二阶 ln 导
+
+    // ---- 顶点 Bv = √(N(q0·dd)/N(q·dd))（has_bf 时）----
+    double Bv = 1.0, lB = 0.0, lBp = 0.0;      // Bv 数值 + ln 导数(对 m0)
+    if (has_bf) {
+        double Nv_v, Nv_p, Nv_pp, Nv0_v, Nv0_p, Nv0_pp;
+        bwrN(Lvtx, q * dd, Nv_v, Nv_p, Nv_pp);
+        bwrN(Lvtx, q0 * dd, Nv0_v, Nv0_p, Nv0_pp);
+        Bv = sqrt(Nv0_v / Nv_v);
+        double Nv0_m = Nv0_p * dd * q0p;
+        double Nv0_mm = Nv0_pp * (dd * q0p) * (dd * q0p) + Nv0_p * dd * q0pp;
+        lB = 0.5 * Nv0_m / Nv0_v;
+        lBp = 0.5 * (Nv0_mm / Nv0_v - (Nv0_m / Nv0_v) * (Nv0_m / Nv0_v));
+    }
+
+    // ---- P = (q/q0)^n, n = 2Lmin+1（q 与 m0 无关）----
+    int nP = 2 * Lmin + 1;
+    double lP = -nP * u;                       // P'/P
+    double lPp = nP * (u * u - q0pp / q0);     // (P'/P)'
+    double pP = 1.0;
+    for (int k = 0; k < nP; ++k) pP *= (q / q0);
+
+    // ---- γ 组: γ = g0·P·(m0/m)·Bf² ----
+    double Lg = lP + 1.0 / m0 + lI;
+    double Lgp = lPp - 1.0 / (m0 * m0) + lIp;
+    double gamma = g0 * pP * (m0 / m) * I2;
+    double g_m = gamma * Lg;
+    double g_mm = gamma * (Lg * Lg + Lgp);
+    double g_g = gamma / g0;
+    double g_mg = g_m / g0;
+    double g_gg = 0.0;
+
+    // ---- x, y, s: 对 (m0, g0) 与混合的一二阶 ----
+    double x = m02 - m * m;
+    double x_m = 2.0 * m0, x_mm = 2.0;
+    double x_g = 0.0, x_mg = 0.0, x_gg = 0.0;   // x 与 g0 无关
+    double y = m0 * gamma;
+    double y_m = gamma + m0 * g_m;
+    double y_mm = 2.0 * g_m + m0 * g_mm;
+    double y_g = m0 * g_g;
+    double y_gg = m0 * g_gg;
+    double y_mg = g_g + m0 * g_mg;
+    double s = x * x + y * y;
+    double s_m = 2.0 * x * x_m + 2.0 * y * y_m;
+    double s_mm = 2.0 * x_m * x_m + 2.0 * x * x_mm + 2.0 * y_m * y_m + 2.0 * y * y_mm;
+    double s_g = 2.0 * y * y_g;
+    double s_gg = 2.0 * y_g * y_g;
+    double s_mg = 2.0 * y_m * y_g + 2.0 * y * y_mg;
+
+    // ---- 商 z/s 的一二阶（z = x 或 y; g0 与 x 无关但公式通用）----
+    double invs = 1.0 / s, invs2 = invs * invs, invs3 = invs2 * invs;
+    double Rm = (x_m * s - x * s_m) * invs2;
+    double Rg = (-x * s_g) * invs2;
+    double Rmm = (2.0 * s - x * s_mm) * invs2 - 2.0 * s_m * (x_m * s - x * s_m) * invs3;
+    double Rgg = (-x * s_gg) * invs2 - 2.0 * s_g * (-x * s_g) * invs3;
+    double Rmg = (x_mg * s + x_g * s_m - x_m * s_g - x * s_mg) * invs2
+               - 2.0 * s_m * (x_g * s - x * s_g) * invs3;
+    double Im = (y_m * s - y * s_m) * invs2;
+    double Ig = (y_g * s - y * s_g) * invs2;
+    double Imm = (y_mm * s - y * s_mm) * invs2 - 2.0 * s_m * (y_m * s - y * s_m) * invs3;
+    double Igg = (y_gg * s - y * s_gg) * invs2 - 2.0 * s_g * (y_g * s - y * s_g) * invs3;
+    double Img = (y_mg * s + y_g * s_m - y_m * s_g - y * s_mg) * invs2
+               - 2.0 * s_m * (y_g * s - y * s_g) * invs3;
+
+    // ---- 乘顶点 Bv: (z·Bv)' = Bv(z' + z·lB); 二阶 = Bv(z'' + 2z'·lB + z(lB²+lBp)) ----
+    double R = x * invs, I = y * invs;
+    Fr = R * Bv;
+    Fi = I * Bv;
+    dFr[0] = (Rm + R * lB) * Bv;
+    dFi[0] = (Im + I * lB) * Bv;
+    dFr[1] = Rg * Bv;                        // Bv 与 g0 无关
+    dFi[1] = Ig * Bv;
+    double b2 = lB * lB + lBp;
+    d2Fr[0] = (Rmm + 2.0 * Rm * lB + R * b2) * Bv;
+    d2Fi[0] = (Imm + 2.0 * Im * lB + I * b2) * Bv;
+    d2Fr[1] = (Rmg + Rg * lB) * Bv;          // ∂m∂g
+    d2Fi[1] = (Img + Ig * lB) * Bv;
+    d2Fr[2] = d2Fr[1];                       // ∂g∂m（对称）
+    d2Fi[2] = d2Fi[1];
+    d2Fr[3] = Rgg * Bv;
+    d2Fi[3] = Igg * Bv;
+}
 __global__ void computeCustomHessianKernel(
     const thrust::complex<double>* d_slamp_tab,
     const ctComplex* d_v,
