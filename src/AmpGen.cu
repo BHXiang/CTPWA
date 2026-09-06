@@ -2165,6 +2165,35 @@ void AmpCalc::addBlock(std::shared_ptr<AmpCasDecay> cas,
         dr.aux_size = static_cast<int>(aux.size());
         h_all_channels.insert(h_all_channels.end(), aux.begin(), aux.end());
 
+        // BWR 解析特化资格: BWR + 2 参数 + q0 链子质量不是 M0Param（m1d/m2d 在
+        // 上方 aux 构建分支作用域; 非内置模型分支此段仍执行, 变量不可见 →
+        // 用独立重查）
+        dr.bwr_flag = 0;
+        dr.bwr_lmin = 0;
+        dr.bwr_has_bf = 0;
+        dr.bwr_d = 0.0;
+        if (dr.type == ResModelType::BWR && dr.param_count == 2) {
+            Q0MassDep mm1, mm2;
+            double ff1 = 0.0, ff2 = 0.0;
+            bool okdep = cas->getDaughterMassDep(dr.particle_idx, dr.particle_idx,
+                                                 mm1, ff1, mm2, ff2);
+            if (okdep && mm1 != Q0MassDep::M0Param && mm2 != Q0MassDep::M0Param) {
+                const auto& ropts = res.getOptions();
+                double rdd = 3.0;
+                auto itd = ropts.find("d");
+                if (itd != ropts.end()) rdd = std::stod(itd->second);
+                bool rhas_bf = true;
+                auto ith = ropts.find("has_bf");
+                if (ith != ropts.end()) rhas_bf = (ith->second == "1" || ith->second == "true");
+                int rlmin = cas->getNodeLMin(res.getTag());
+                if (rlmin < 0) rlmin = 1;
+                dr.bwr_flag = 1;
+                dr.bwr_lmin = rlmin;
+                dr.bwr_has_bf = rhas_bf ? 1 : 0;
+                dr.bwr_d = rhas_bf ? rdd : 0.0;
+            }
+        }
+
         h_res.push_back(dr);
     }
     h_templates_.push_back(h_res);
@@ -2847,6 +2876,24 @@ __device__ double breakup_momentum(double m, double m1, double m2) {
     return sqrt(q_sq) / (2.0 * m);
 }
 
+// UH 诊断空跑: 保留 launch/同步形状, 只读 pre-pass S（防止 stage1 计算成本）
+__global__ void uhProbeNoopKernel(const double* __restrict__ d_S_re_full,
+                                  const double* __restrict__ d_S_im_full,
+                                  double* __restrict__ d_g_out,
+                                  int nEvents, int nPolar, int Npr)
+{
+    int evt = blockIdx.x * blockDim.x + threadIdx.x;
+    if (evt >= nEvents) return;
+    double I = 0.0;
+    for (int p = 0; p < nPolar; ++p) {
+        double a = d_S_re_full[evt * nPolar + p];
+        double b = d_S_im_full[evt * nPolar + p];
+        I += a * a + b * b;
+    }
+    for (int j = 0; j < Npr; ++j)
+        if (d_g_out) d_g_out[evt * Npr + j] = I * 1e-30;
+}
+
 // T 计算 kernel: T[e,p] = Σ_sl v[site+sl] * slamps[sl, e, p]
 // ---------------------------------------------------------------------------
 __global__ void computeEffectiveCouplingKernel(
@@ -3462,6 +3509,11 @@ void AmpCalc::computeUnifiedHessian(
                     && blk.jit.hessian_target < (int)blk.jit.nodes.size())
                     jit_target_node = blk.jit.nodes[blk.jit.hessian_target].node_idx;
                 // Custom / 符号微分标量路径（P 运行时无上限；多共振态）
+                bool use_bwr_spec = !getenv("CTPWA_NO_BWR_SPEC");
+                if (getenv("CTPWA_UH_PROBE")) {
+                    uhProbeNoopKernel<<<grid, kBlockSize>>>(
+                        d_S_re, d_S_im, bt.d_g, nch, nPol, Npr);
+                } else {
                 computeCustomHessianKernel<<<grid, kBlockSize>>>(
                     cas->getSLAmpsTab()[gpu], d_v_blk,
                     cas->getMomenta()[gpu], cas->getDecayNodes()[gpu], dsz,
@@ -3475,7 +3527,8 @@ void AmpCalc::computeUnifiedHessian(
                     bt.d_res_off, bt.d_res_cnt, Nres, jit_target_node,
                     evt_off_c,
                     nSigma, cas->getMomentaTab()[gpu], cas->getSignsTab()[gpu],
-                    jit_full);
+                    jit_full, use_bwr_spec);
+                }
                 cudaDeviceSynchronize();
                 if (getenv("CTPWA_JIT_DEBUG")) {
                     cudaError_t e = cudaGetLastError();
@@ -3485,8 +3538,9 @@ void AmpCalc::computeUnifiedHessian(
                 if (!is_conjugate) first_free_block = false;
                 if (hprof) {
                     auto t_blk1 = std::chrono::high_resolution_clock::now();
-                    printf("[PROF] UH gpu=%d blk=%zu Npr=%d Nres=%d custom=%d symaux=%d jit=%d conj=%d: %.2f ms\n",
-                        gpu, bi, Npr, Nres, (int)is_custom_block, (int)has_sym_aux,
+                    printf("[PROF] UH gpu=%d blk=%zu Npr=%d Nres=%d nSL=%d sg=%d pol=%d custom=%d symaux=%d jit=%d conj=%d: %.2f ms\n",
+                        gpu, bi, Npr, Nres, nSL, nSigma, nPol,
+                        (int)is_custom_block, (int)has_sym_aux,
                         (int)blk.jit.enabled, (int)is_conjugate,
                         std::chrono::duration<double, std::milli>(t_blk1 - t_blk0).count());
                     fflush(stdout);

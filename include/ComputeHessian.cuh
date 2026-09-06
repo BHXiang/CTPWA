@@ -99,7 +99,8 @@ __global__ void computeCustomHessianKernel(
     int nSigma,
     const DeviceMomenta* d_mom_tab,
     const double* d_sign_tab,
-    const double* d_jit_out_full = nullptr);   // JIT 物化 F/dF/d2F（null → 解释器）
+    const double* d_jit_out_full,        // JIT 物化 F/dF/d2F（null → 解释器）
+    bool use_bwr_spec);                  // BWR 解析特化旁路
 
 __global__ void hessianCrossBlockKernel(
     const double* d_g_A, const double* d_dS_re_A, const double* d_dS_im_A,

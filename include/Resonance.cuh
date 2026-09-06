@@ -36,6 +36,11 @@ struct DeviceResonance
     int channel_offset;      // 在 d_all_channels 中的起始位置
     int aux_offset = 0;      // 模型专属辅助数据在 d_all_aux 中的偏移（Hist 形状表 / Custom 字节码；未用为 0）
     int aux_size = 0;        // 辅助数据长度（未用为 0）
+    // ---- BWR 解析特化资格（host 一次性判定; 0=不可特化, 走字节码）----
+    int bwr_flag = 0;        // 1 = 可特化（BWR, param_count==2, q0 链子质量非 M0Param）
+    int bwr_lmin = 0;        // 烘焙 Lmin（γ 内部 Bf² 用）
+    int bwr_has_bf = 0;      // 模型含势垒因子（内部 Bf² + 顶点 Bf）
+    double bwr_d = 0.0;      // 势垒半径 d（has_bf 时为 opts d）
 };
 
 // ============================================================================

@@ -561,6 +561,100 @@ __device__ void addBfQ0HessianTerms(
 // 每共振态 r 占据区间 [res_off[r], res_off[r]+res_cnt[r])；d_param_map 把位置
 // 映到该共振态自身参数下标（0=mass, 1=width, ...）。
 // ============================================================
+
+// ============================================================================
+// BWR 解析特化（v1: 9 点中心差分, 与字节码同数学 F）
+//   F = S(m,m0,g0; Lmin) × Bf(Lvtx)   [has_bf 时]
+//   S = (x+iy)/s; x=m0²−m²; y=m0·γ; s=x²+y²
+//   γ = g0·(q/q0)^{2Lmin+1}·(m0/m)·Bf²(Lmin,q,q0,d)
+//   Bf² = N_L(q0·d)/N_L(q·d), N_L(z)=Σ_k c_k z^{2k}
+// 资格(bwr_flag): BWR, param_count==2, q0 链子质量与 θ 无关 → 差分精确。
+// ============================================================================
+__device__ double bwrPolyN(int L, double z) {
+    // N_L(z) 系数表（与 ResModel.cu bfPolyCoeffs 一致, L≤5）
+    if (L < 0 || L > 5) return 1.0;
+    double z2 = z * z, pw = 1.0, sum = 0.0;
+    switch (L) {
+        case 0: sum = 1.0; break;
+        case 1: sum = 1.0 + z2; break;
+        case 2: sum = 9.0 + 3.0 * z2 + z2 * z2; break;
+        case 3: sum = 225.0 + 45.0 * z2 + 6.0 * z2 * z2 + z2 * z2 * z2; break;
+        case 4: sum = 11025.0 + 1575.0 * z2 + 135.0 * z2 * z2 + 10.0 * z2 * z2 * z2 + z2 * z2 * z2 * z2; break;
+        default: {  // L=5
+            double p2 = z2 * z2, p3 = p2 * z2, p4 = p3 * z2, p5 = p4 * z2;
+            sum = 893025.0 + 99225.0 * z2 + 6300.0 * p2 + 210.0 * p3 + 15.0 * p4 + p5;
+        }
+    }
+    return sum;
+}
+
+__device__ double2 bwrFv(double m0, double g0, double m, double q,
+                         double q0m1, double q0m2, double dd,
+                         int Lmin, int Lvtx, bool has_bf) {
+    double A = (q0m1 + q0m2) * (q0m1 + q0m2);
+    double B = (q0m1 - q0m2) * (q0m1 - q0m2);
+    double q0s = (m0 * m0 - A) * (m0 * m0 - B);
+    double q0 = q0s > 0.0 ? sqrt(q0s) / (2.0 * m0) : 1e-3;
+    double Ni = bwrPolyN(Lmin, q * dd), N0i = bwrPolyN(Lmin, q0 * dd);
+    // (q/q0)^(2Lmin+1): 整数幂
+    int e = 2 * Lmin + 1;
+    double pw = 1.0;
+    for (int k = 0; k < e; ++k) pw *= (q / q0);
+    double gamma = g0 * pw * (m0 / m) * (N0i / Ni);
+    double x = m0 * m0 - m * m;
+    double y = m0 * gamma;
+    double s = x * x + y * y;
+    double inv = 1.0 / s;
+    double2 F = make_double2(x * inv, y * inv);
+    if (has_bf) {
+        double Nv = bwrPolyN(Lvtx, q * dd), Nv0 = bwrPolyN(Lvtx, q0 * dd);
+        double bv = sqrt(Nv0 / Nv);
+        F.x *= bv;
+        F.y *= bv;
+    }
+    return F;
+}
+
+// 9 点中心差分 → F/dF(2)/d²F(4 上三角含混合), 布局与 evalCustomAll 一致
+// (P_r=2: dFr[0]=∂m0, dFr[1]=∂g0; d2Fr[j*2+k] 全 2×2)
+__device__ void bwrSpecEval(double m0, double g0, double m, double q,
+                            double q0m1, double q0m2, double dd,
+                            int Lmin, int Lvtx, bool has_bf,
+                            double& Fr, double& Fi,
+                            double* dFr, double* dFi,
+                            double* d2Fr, double* d2Fi) {
+    double hm = 3e-5 * fmax(fabs(m0), 0.5);
+    double hg = 3e-5 * fmax(fabs(g0), 0.01);
+    double2 f00 = bwrFv(m0, g0, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
+    double2 fpm = bwrFv(m0 + hm, g0, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
+    double2 fmm = bwrFv(m0 - hm, g0, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
+    double2 fpg = bwrFv(m0, g0 + hg, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
+    double2 fmg = bwrFv(m0, g0 - hg, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
+    double2 fpp = bwrFv(m0 + hm, g0 + hg, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
+    double2 fpm_ = bwrFv(m0 + hm, g0 - hg, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
+    double2 fmp = bwrFv(m0 - hm, g0 + hg, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
+    double2 fmm_ = bwrFv(m0 - hm, g0 - hg, m, q, q0m1, q0m2, dd, Lmin, Lvtx, has_bf);
+    Fr = f00.x; Fi = f00.y;
+    double inv2m = 0.5 / hm, inv2g = 0.5 / hg;
+    double invm2 = 1.0 / (hm * hm), invg2 = 1.0 / (hg * hg);
+    double invmg = 1.0 / (4.0 * hm * hg);
+    for (int c = 0; c < 2; ++c) {
+        double* fr = c ? dFi : dFr;
+        double* f2 = c ? d2Fi : d2Fr;
+        double a00 = c ? f00.y : f00.x;
+        double apm = c ? fpm.y : fpm.x, amm = c ? fmm.y : fmm.x;
+        double apg = c ? fpg.y : fpg.x, amg = c ? fmg.y : fmg.x;
+        double app = c ? fpp.y : fpp.x, ap_ = c ? fpm_.y : fpm_.x;
+        double amp = c ? fmp.y : fmp.x, am_ = c ? fmm_.y : fmm_.x;
+        fr[0] = (apm - amm) * inv2m;
+        fr[1] = (apg - amg) * inv2g;
+        f2[0 * 2 + 0] = (apm - 2.0 * a00 + amm) * invm2;
+        f2[0 * 2 + 1] = (app - ap_ - amp + am_) * invmg;   // ∂m∂g
+        f2[1 * 2 + 0] = f2[0 * 2 + 1];
+        f2[1 * 2 + 1] = (apg - 2.0 * a00 + amg) * invg2;
+    }
+}
+
 __global__ void computeCustomHessianKernel(
     const thrust::complex<double>* d_slamp_tab,
     const ctComplex* d_v,
@@ -585,11 +679,12 @@ __global__ void computeCustomHessianKernel(
     const int* d_res_cnt,             // [Nres] 每共振态自由位置数
     int Nres,
     int jit_target_node,              // JIT-full 物化节点下标（-1 → 解释器）
-    int evt_offset = 0,
-    int nSigma = 1,
-    const DeviceMomenta* d_mom_tab = nullptr,
-    const double* d_sign_tab = nullptr,
-    const double* d_jit_out_full) {  // JIT 物化 F/dF/d2F（null → 解释器）
+    int evt_offset,
+    int nSigma,
+    const DeviceMomenta* d_mom_tab,
+    const double* d_sign_tab,
+    const double* d_jit_out_full,  // JIT 物化 F/dF/d2F（null → 解释器）
+    bool use_bwr_spec) {          // BWR 解析特化旁路（差分二阶）
     int evt = blockIdx.x * blockDim.x + threadIdx.x;
     if (evt >= nEvents) return;
     int evt_abs = evt + evt_offset;
@@ -737,6 +832,13 @@ __global__ void computeCustomHessianKernel(
                         interpEval(aux + res.aux_offset, mm, Fr, Fi, dFr, dFi, P_r);
                         for (int j = 0; j < P_r; ++j)
                             for (int k = 0; k < P_r; ++k) { d2Fr[j * P_r + k] = 0; d2Fi[j * P_r + k] = 0; }
+                    } else if (use_bwr_spec && res.bwr_flag && P_r == 2) {
+                        // BWR 解析特化: 9 点差分二阶（数学与字节码同 F; 资格见
+                        // bwr_flag —— q0 链子质量与 θ 无关）
+                        bwrSpecEval(rp[0], rp[1], mm, qq, md1_q0, md2_q0,
+                                    res.bwr_d, res.bwr_lmin, L,
+                                    res.bwr_has_bf != 0,
+                                    Fr, Fi, dFr, dFi, d2Fr, d2Fi);
                     } else {
                         double p1_P = pD1.P(), p1_E = pD1.E;
                         double p1_ct = (p1_P > 0) ? pD1.Pz / p1_P : 0.0;
