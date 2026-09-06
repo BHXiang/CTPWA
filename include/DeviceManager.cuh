@@ -74,6 +74,11 @@ public:
     // 单个 complex 值的内存占用: Float→8B, Double→16B
     size_t complexSize() const;
 
+    // 运行时存储档位说明（由 analysis 初始化时注入; print() 展示）:
+    // 例: "A float2(8B) | dF double2(16B) | 核心 double (precision: auto)"
+    void setStorageNote(const std::string& n) { storage_note_ = n; }
+    const std::string& storageNote() const { return storage_note_; }
+
     // ============================================================
     // 显示
     // ============================================================
@@ -124,4 +129,5 @@ public:
 private:
     std::vector<DeviceInfo> devices_;
     ComplexPrecision complex_precision_ = ComplexPrecision::Float;
+    std::string storage_note_;   // 运行时存储档位（analysis 注入; 空则不打印）
 };

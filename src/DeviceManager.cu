@@ -160,9 +160,14 @@ void DeviceManager::print() const
                     formatBytes((double)d.total_memory).c_str(),
                     d.available ? "" : " [unavailable]");
     }
-    std::printf("  complex precision: %s (%zu B/value)\n",
-                (complex_precision_ == ComplexPrecision::Double) ? "double" : "float",
+    // complex_precision_ 是预留枚举(默认 Float, 从未接线)——直接打印会误导
+    // (double .so 下显示 "float (16 B/value)")。这里只报告编译事实;
+    // 运行时存储档位(A/dF 几字节)由 analysis 经 setStorageNote 注入后打印。
+    std::printf("  complex 编译精度: %s (%zu B/value)\n",
+                (sizeof(ctComplex) == 16) ? "double2" : "float2",
                 complexSize());
+    if (!storage_note_.empty())
+        std::printf("  运行时存储: %s\n", storage_note_.c_str());
 }
 
 // ============================================================

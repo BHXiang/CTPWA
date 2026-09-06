@@ -3445,6 +3445,17 @@ public:
 
         bool hprof = getenv("CTPWA_PROF") != nullptr;
         auto hT0 = std::chrono::high_resolution_clock::now();  // reComputeAmps 完成
+        // ---- Hessian 分段显存快照（CTPWA_PROF 下打印; 主卡视角）----
+        size_t hmem[5] = {0, 0, 0, 0, 0};
+        int hmem_n = 0;
+        auto hmem_snap = [&]() {
+            if (!hprof || hmem_n >= 5) return;
+            cudaSetDevice(dev.index());
+            size_t free_b = 0, tot_b = 0;
+            cudaMemGetInfo(&free_b, &tot_b);
+            hmem[hmem_n++] = (tot_b - free_b) / 1048576ULL;
+        };
+        hmem_snap();  // 基线（reComputeAmps 前）
         auto hT1 = hT0, hT2 = hT0, hT3 = hT0, hT4 = hT0, hT5 = hT0;
 
         // Update d_phsp_matrix_ to reflect current amplitudes
@@ -3537,6 +3548,7 @@ public:
         // std::cout << "Hessian elements in line." << __LINE__ << ": \n" << hessian << std::endl;
 
         hT1 = std::chrono::high_resolution_clock::now();  // phsp 矩阵重建完成
+        hmem_snap();
 
         // ---- 3. vv block [0:n2, 0:n2] ----
         if (n2 > 0) {
@@ -3654,6 +3666,7 @@ public:
         // std::cout << "Hessian elements in line." << __LINE__ << ": \n" << hessian << std::endl;
 
         hT2 = std::chrono::high_resolution_clock::now();  // vv block 完成
+        hmem_snap();
 
         // ---- 4. vθ/θθ block [n2:total, n2:total] ----
         if (nt > 0 && theta.numel() > 0) {
@@ -3846,6 +3859,7 @@ public:
             hessian.slice(0,n2,total).slice(1,n2,total).copy_(res_hess);
         }
         hT3 = std::chrono::high_resolution_clock::now();  // vθ/θθ 段完成
+        hmem_snap();
 
         // std::cout << "Hessian elements in line." << __LINE__ << ": \n" << hessian << std::endl;
 
@@ -4034,9 +4048,12 @@ public:
 
             if (hprof) {
                 auto hTend = std::chrono::high_resolution_clock::now();
+                hmem_snap();
                 auto hms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
                 printf("[PROF] H.reAmp: %.2f | H.phspM: %.2f | H.vv: %.2f | H.vth+thth+cpl: %.2f | H.total: %.2f\n",
                     hms(hT0, hT1), hms(hT1, hT2), hms(hT2, hT3), hms(hT3, hTend), hms(hT0, hTend));
+                printf("[PROF] H.mem(MiB): 基=%zu | phspM后=%zu | vv后=%zu | theta后=%zu | 返回前=%zu\n",
+                    hmem[0], hmem[1], hmem[2], hmem[3], hmem[4]);
                 fflush(stdout);
             }
             return hess_fit;
@@ -4091,9 +4108,12 @@ public:
 
         if (hprof) {
             auto hTend = std::chrono::high_resolution_clock::now();
+            hmem_snap();
             auto hms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
             printf("[PROF] H.reAmp: %.2f | H.phspM: %.2f | H.vv: %.2f | H.vth+thth+cpl: %.2f | H.total: %.2f\n",
                 hms(hT0, hT1), hms(hT1, hT2), hms(hT2, hT3), hms(hT3, hTend), hms(hT0, hTend));
+            printf("[PROF] H.mem(MiB): 基=%zu | phspM后=%zu | vv后=%zu | theta后=%zu | 返回前=%zu\n",
+                hmem[0], hmem[1], hmem[2], hmem[3], hmem[4]);
             fflush(stdout);
         }
         return hessian;
@@ -4891,8 +4911,8 @@ private:
         //     存储与计算均 float; 逐批接线, 未接线入口显式报错）
         //   .so 编译 float:  precision:float/hybrid/auto → 原生 float 行为;
         //                    precision:double → 报错（float .so 无法提精度）
+        std::string req = config_parser_.getPrecision();
         {
-            const std::string& req = config_parser_.getPrecision();
             if (req != "auto" && req != "hybrid" && req != "float" && req != "double") {
                 std::cerr << "ERROR: 配置 precision=\"" << req
                           << "\" 无效（仅支持 auto | hybrid | float | double）" << std::endl;
@@ -4939,6 +4959,20 @@ private:
             std::cerr << "ERROR: 无可用 CUDA 设备。ctpwa 当前仅支持 GPU 计算"
                          "（CPU 后端尚未实现），无法继续。" << std::endl;
             throw std::runtime_error("no CUDA devices available");
+        }
+        // 运行时存储档位（打印在 DeviceManager 的 complex 编译精度行之后）:
+        //   auto/hybrid: A float2(8B) + dF double2(16B) + double 核心
+        //   float:       A/dF float2(8B) + float 核心（Hessian 走 double 上转）
+        //   double:      全 double2(16B)
+        {
+            const char* a_st = float_amps_ ? "float2 (8B)" : "double2 (16B)";
+            const char* d_st = (prec_mode_ == PrecMode::Float) ? "float2 (8B)"
+                                                               : "double2 (16B)";
+            const char* core =
+                (prec_mode_ == PrecMode::Float) ? "float" : "double";
+            std::string note = std::string("A ") + a_st + " | dF " + d_st +
+                               " | 核心 " + core + " (precision: " + req + ")";
+            device_mgr_.setStorageNote(note);
         }
         device_mgr_.print();
 
