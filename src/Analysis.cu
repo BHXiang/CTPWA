@@ -1588,6 +1588,7 @@ public:
         }
 
         double h_phsp_integral = 0.0;
+        double h_full_phsp_integral = 0.0;  // 全量 phsp 积分（干涉矩阵归一分母）
         double* h_interference_matrix = new double[nSLvectors_.size() * nSLvectors_.size()];
         double* h_total_results = new double[N_phsp];
         double* h_partial_results = new double[N_phsp * npartials];
@@ -1620,23 +1621,83 @@ public:
             /////////////////////////
             /////////////////////////
             if (!phsp_freed_) {
-                // phsp 驻留模式: 直接读常驻表 phsp 区（float 模式下转 double 临时）
-                const ctComplex* d_amp_res = d_all_amplitudes_[gpu];
-                ctComplex* d_amp_dbl = nullptr;
-                if (float_amps_) {
-                    size_t nElem = (size_t)events_[gpu][0] * n_polar_ * n_amplitudes_;
-                    d_amp_dbl = upcastAmpSegToDouble(d_amp_res, nElem);
-                    d_amp_res = d_amp_dbl;
+                // phsp 驻留模式: 逐批上转 + computeResults 累加。原实现整表
+                // upcast(double 副本) + computeResults 内部整段临时, 大 phsp 下
+                // 峰值 = 2×PA×nEv×16B(可达 7GB+), A100-40GB 实测 OOM →
+                // 改按批（峰值 ~批内 2×PA×16B, 默认 100k 事件 ≈ 0.3GB）。
+                int ne = events_[gpu][0];
+                if (ne > 0) {
+                    long long per_ev_bytes = (long long)n_polar_ * n_amplitudes_ * 8;
+                    int batch_cap = 100000;
+                    if (const char* e = getenv("CTPWA_WR_BATCH")) {
+                        int v = atoi(e);
+                        if (v > 0) batch_cap = v;   // 显式覆盖（回归测试/调优用）
+                    } else if (per_ev_bytes > 0) {
+                        long long cap = 200LL * 1024 * 1024 / per_ev_bytes;
+                        if (cap < 2000) cap = 2000;
+                        if (cap < batch_cap) batch_cap = (int)cap;
+                    }
+                    const ctComplex* d_amp_base = d_all_amplitudes_[gpu];
+                    for (int c0 = 0; c0 < ne; c0 += batch_cap) {
+                        int nch = std::min(batch_cap, ne - c0);
+                        const ctComplex* d_amp_seg = d_amp_base;
+                        ctComplex* d_amp_dbl = nullptr;
+                        if (float_amps_) {
+                            // 注意: A 表为 float2(8B) 存储而 d_amp_base 是
+                            // ctComplex*(16B 语义) —— 段偏移必须按 float2 算术,
+                            // 否则 c0>0 的批指针翻倍错位（分批后 hfit 全 nan）
+                            const float2* f2 =
+                                reinterpret_cast<const float2*>(d_amp_base)
+                                + (size_t)c0 * n_polar_ * n_amplitudes_;
+                            d_amp_dbl = upcastAmpSegToDouble(
+                                reinterpret_cast<const ctComplex*>(f2),
+                                (size_t)nch * n_polar_ * n_amplitudes_);
+                            d_amp_seg = d_amp_dbl;
+                        } else {
+                            d_amp_seg =
+                                d_amp_base + (size_t)c0 * n_polar_ * n_amplitudes_;
+                        }
+                        double* d_ct = nullptr;
+                        double* d_cp = nullptr;
+                        if (cudaMalloc(&d_ct, (size_t)nch * sizeof(double))
+                                != cudaSuccess
+                            || cudaMalloc(&d_cp, (size_t)nch * npartials
+                                                     * sizeof(double))
+                                   != cudaSuccess) {
+                            char buf[256];
+                            snprintf(buf, sizeof(buf),
+                                     "writeResult: 批缓冲分配失败 (nch=%d)",
+                                     nch);
+                            throw std::runtime_error(buf);
+                        }
+                        cudaMemset(d_cp, 0,
+                                   (size_t)nch * npartials * sizeof(double));
+                        computeResults(d_amp_seg,
+                            reinterpret_cast<const ctComplex*>(
+                                extended_vec_per_gpu[gpu].data_ptr()),
+                            d_ct, d_total_integral_gpu, d_cp,
+                            d_interference_matrix_gpu, nullptr,
+                            d_wave_mask_gpu, d_selected_integral_gpu,
+                            d_ct,
+                            nullptr, 0,
+                            d_nSLvectors, npartials, nch, n_amplitudes_,
+                            n_polar_);
+                        // 批结果拷回全尺寸缓冲偏移（total 段 = 赋值, partial
+                        // 段 [p][ev] 主序）
+                        cudaMemcpy(d_final_result_vec[gpu] + c0, d_ct,
+                                   (size_t)nch * sizeof(double),
+                                   cudaMemcpyDeviceToDevice);
+                        for (int p = 0; p < npartials; ++p)
+                            cudaMemcpy(d_partial_result_vec[gpu]
+                                           + (size_t)p * ne + c0,
+                                       d_cp + (size_t)p * nch,
+                                       (size_t)nch * sizeof(double),
+                                       cudaMemcpyDeviceToDevice);
+                        cudaFree(d_ct);
+                        cudaFree(d_cp);
+                        if (d_amp_dbl) cudaFree(d_amp_dbl);
+                    }
                 }
-                computeResults(d_amp_res,
-                    reinterpret_cast<const ctComplex*>(extended_vec_per_gpu[gpu].data_ptr()),
-                    d_final_result_vec[gpu], d_total_integral_gpu, d_partial_result_vec[gpu],
-                    d_interference_matrix_gpu, nullptr,
-                    d_wave_mask_gpu, d_selected_integral_gpu,
-                    d_final_result_vec[gpu],
-                    nullptr, 0,
-                    d_nSLvectors, npartials, events_[gpu][0], n_amplitudes_, n_polar_);
-                if (d_amp_dbl) cudaFree(d_amp_dbl);
             } else {
                 // phsp 流式模式: 按批重算 phsp 振幅 → computeResults 逐批累加
                 int ne = events_[gpu][0];
@@ -1719,6 +1780,14 @@ public:
                     sizeof(double), cudaMemcpyDeviceToHost);
             }
             h_phsp_integral += h_total_integral_gpu;
+            // 全量 phsp 积分单独记账: has_waves 时 h_phsp_integral 是子集积分,
+            // 而干涉矩阵按全量积分归一（kernel 已改未归一输出）
+            {
+                double h_full_gpu = 0.0;
+                cudaMemcpy(&h_full_gpu, d_total_integral_gpu, sizeof(double),
+                           cudaMemcpyDeviceToHost);
+                h_full_phsp_integral += h_full_gpu;
+            }
             double* h_interference_matrix_gpu = new double[npartials * npartials];
             cudaMemcpy(h_interference_matrix_gpu, d_interference_matrix_gpu, npartials * npartials * sizeof(double), cudaMemcpyDeviceToHost);
             for (int i = 0; i < npartials * npartials; ++i) {
@@ -1796,6 +1865,10 @@ public:
         // 写入干涉矩阵（对称矩阵，需填充上下三角）
         if (h_interference_matrix != nullptr)
         {
+            // kernel 现输出未归一干涉矩阵（批/多 GPU 兼容）→ 统一除以全量 phsp 积分
+            if (h_full_phsp_integral > 0.0)
+                for (int i = 0; i < npartials * npartials; ++i)
+                    h_interference_matrix[i] /= h_full_phsp_integral;
             TMatrixD interferenceMatrix(npartials, npartials);
             for (int i = 0; i < npartials; ++i)
             {

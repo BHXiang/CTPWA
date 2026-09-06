@@ -3,6 +3,7 @@
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <vector>
+#include <stdexcept>
 // #include <iostream>
 // #include <complex>
 #include <cublas_v2.h>
@@ -133,7 +134,11 @@ computeModWithInterference(const ctComplex* __restrict__ result_matrix,
             selected_acc += sr * sr + si * si;
         }
 
-        // 计算干涉矩阵元素（仅上三角部分）
+        // 计算干涉矩阵元素（仅上三角部分）。
+        // 输出【未归一】: 不再除以 total_result_value。原因: writeResult 按事件批
+        // 调用本 kernel 时, *total_result 是"实时累计积分"——逐批除会得到不同分母
+        // → 干涉矩阵错误; 统一"未归一输出 + 调用方拿到总积分后一次性归一"在整表
+        // 与分批两种调用下数值一致（整表单次调用由 host 补 ÷ 总积分等价复现）。
         for (int i = 0; i < npartials; i++) {
             for (int j = i; j < npartials; j++) {
                 double interference_value = 0.0;
@@ -142,16 +147,15 @@ computeModWithInterference(const ctComplex* __restrict__ result_matrix,
                     double partial_intensity =
                         partial_real[i] * partial_real[i] +
                         partial_imag[i] * partial_imag[i];
-                    interference_value = partial_intensity / total_result_value;
+                    interference_value = partial_intensity;
                 }
                 else {
-                    // 非对角线元素：2 * Re(A_i * A_j^*) / total_result
+                    // 非对角线元素：2 * Re(A_i * A_j^*)
                     float a = partial_real[i];
                     float b = partial_imag[i];
                     float c = partial_real[j];
                     float d = partial_imag[j];
-                    interference_value =
-                        2.0 * (a * c + b * d) / total_result_value;
+                    interference_value = 2.0 * (a * c + b * d);
                 }
 
                 // 计算干涉矩阵中的索引（上三角存储）
@@ -174,12 +178,12 @@ computeModWithInterference(const ctComplex* __restrict__ result_matrix,
             for (int q = 0; q < npairs_exported; ++q) {
                 int k = d_pair_list[q];
                 event_interference[event_idx + nEvents * q] =
-                    interference_accumulator[k] * total_result_value;
+                    interference_accumulator[k];
             }
         } else {
             for (int k = 0; k < ninterference; k++) {
                 event_interference[event_idx + nEvents * k] =
-                    interference_accumulator[k] * total_result_value;
+                    interference_accumulator[k];
             }
         }
     }
@@ -192,6 +196,9 @@ computeModWithInterference(const ctComplex* __restrict__ result_matrix,
 }
 
 // 主计算函数
+// 分配失败/内核错误一律立即抛出带上下文的异常——绝不带 nullptr 继续调用 cuBLAS
+// （历史上 cudaMalloc OOM 未检查 → nullptr 进 cublasZdgmm → 误导性的
+// "illegal memory access"，compute-sanitizer 才定位到真实原因）。
 void computeResults(const ctComplex* d_matrix, const ctComplex* d_vector,
     double* d_total_result, double* d_total_integral,
     double* d_partial_result,
@@ -204,25 +211,52 @@ void computeResults(const ctComplex* d_matrix, const ctComplex* d_vector,
     int* d_nSLvectors, int npartials, int nEvents, int ngls,
     int npolar)
 {
+    auto alloc_or_throw = [](void** p, size_t bytes, const char* what) {
+        cudaError_t e = cudaMalloc(p, bytes);
+        if (e == cudaSuccess) return;
+        size_t free_mem = 0, total_mem = 0;
+        cudaMemGetInfo(&free_mem, &total_mem);
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+                 "computeResults: cudaMalloc(%s, %.2f GB) 失败: %s"
+                 "（剩余 %.1f / 共 %.1f GB）——请减小批次/检查驻留表",
+                 what, (double)bytes / 1073741824.0, cudaGetErrorString(e),
+                 (double)free_mem / 1073741824.0, (double)total_mem / 1073741824.0);
+        throw std::runtime_error(buf);
+    };
+    auto cublas_or_throw = [](cublasStatus_t st, const char* what) {
+        if (st == CUBLAS_STATUS_SUCCESS) return;
+        char buf[256];
+        snprintf(buf, sizeof(buf), "computeResults: %s 失败 (cublas err %d)",
+                 what, (int)st);
+        throw std::runtime_error(buf);
+    };
+    auto kernel_or_throw = [](const char* what) {
+        cudaError_t e = cudaGetLastError();
+        if (e == cudaSuccess) return;
+        char buf[256];
+        snprintf(buf, sizeof(buf), "computeResults: %s 失败: %s", what,
+                 cudaGetErrorString(e));
+        throw std::runtime_error(buf);
+    };
+
     cublasHandle_t handle;
-    cublasCreate(&handle);
+    cublas_or_throw(cublasCreate(&handle), "cublasCreate");
 
     // 分配设备内存
     ctComplex* d_complex_result = nullptr;
-    cudaMalloc(&d_complex_result, nEvents * npolar * sizeof(ctComplex));
+    alloc_or_throw(reinterpret_cast<void**>(&d_complex_result),
+                   (size_t)nEvents * npolar * sizeof(ctComplex),
+                   "complex_result 临时");
 
     // cuBLAS 矩阵向量乘法
     const ctComplex alpha = ctMake(1.0, 0.0);
     const ctComplex beta = ctMake(0.0, 0.0);
 
-    CUBLAS_CGEMV(handle, CUBLAS_OP_T, ngls, nEvents * npolar, &alpha, d_matrix,
-        ngls, d_vector, 1, &beta, d_complex_result, 1);
-
-    // 检查 cuBLAS 调用
-    cudaError_t cuda_error = cudaGetLastError();
-    if (cuda_error != cudaSuccess) {
-        printf("cuBLAS error: %s\n", cudaGetErrorString(cuda_error));
-    }
+    cublas_or_throw(CUBLAS_CGEMV(handle, CUBLAS_OP_T, ngls, nEvents * npolar,
+                                 &alpha, d_matrix, ngls, d_vector, 1, &beta,
+                                 d_complex_result, 1),
+                    "cublasCgemv(A·v)");
 
     // 计算总权重
     int blockSize = 128; // 减小blockSize以减少共享内存使用
@@ -230,20 +264,24 @@ void computeResults(const ctComplex* d_matrix, const ctComplex* d_vector,
 
     computeModTotalWeight << <gridSize, blockSize >> > (
         d_complex_result, d_total_result, d_total_integral, nEvents, npolar);
+    kernel_or_throw("computeModTotalWeight");
 
     // 清理中间结果
     cudaFree(d_complex_result);
 
     ctComplex* d_result_matrix = nullptr;
-    cudaMalloc(&d_result_matrix, ngls * nEvents * npolar * sizeof(ctComplex));
+    alloc_or_throw(reinterpret_cast<void**>(&d_result_matrix),
+                   (size_t)ngls * nEvents * npolar * sizeof(ctComplex),
+                   "result_matrix 临时（v·A 物化）");
 
     // 使用 cuBLAS 矩阵乘对角矩阵
     // d_matrix: (nEvents * npolar) × ngls (列主序)
     // d_vector: ngls 向量
     // 计算 d_result_matrix = d_matrix * diag(d_vector)，形状相同
-    CUBLAS_CDGMM(handle, CUBLAS_SIDE_LEFT, ngls, nEvents * npolar, d_matrix,
-        ngls, d_vector, 1, d_result_matrix,
-        ngls);
+    cublas_or_throw(CUBLAS_CDGMM(handle, CUBLAS_SIDE_LEFT, ngls,
+                                 nEvents * npolar, d_matrix, ngls, d_vector, 1,
+                                 d_result_matrix, ngls),
+                    "cublasCdgmm");
 
     // 计算部分权重和干涉矩阵
     // 共享内存用于存储部分振幅的实部和虚部（每个部分2个double）以及干涉矩阵累加器
@@ -276,19 +314,19 @@ void computeResults(const ctComplex* d_matrix, const ctComplex* d_vector,
             d_pair_list, npairs_exported,
             npartials, nEvents, ngls, npolar);
     }
-    // computeModWithInterference<<<gridSize, blockSize,
-    // shared_mem_size>>>(d_result_matrix, d_partial_result, d_partial_sums,
-    // d_interference_matrix, d_event_interference, d_nSLvectors,
-    // d_total_integral, npartials, nEvents, npolar);
-
-    // 检查核函数执行
-    cuda_error = cudaGetLastError();
-    if (cuda_error != cudaSuccess) {
-        printf("Kernel error: %s\n", cudaGetErrorString(cuda_error));
-    }
+    kernel_or_throw("computeModWithInterference");
 
     // 同步确保所有操作完成
     cudaDeviceSynchronize();
+    {
+        cudaError_t se = cudaGetLastError();
+        if (se != cudaSuccess) {
+            char buf[256];
+            snprintf(buf, sizeof(buf), "computeResults: 同步失败: %s",
+                     cudaGetErrorString(se));
+            throw std::runtime_error(buf);
+        }
+    }
 
     // 清理资源
     cudaFree(d_result_matrix);

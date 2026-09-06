@@ -79,3 +79,39 @@ def test_plot_obs_2d_counts_and_obs3_dir(plot_result):
     with uproot.open(plot_result) as f:
         s_d = f["dalitz2/hdata"].values().sum()
         assert 0.98 * N_DATA <= s_d <= N_DATA, f"dalitz2 总计数 {s_d} 越界"
+
+
+def test_write_result_batched_matches_unbatched(make_analysis, device, outputs_dir):
+    """writeResult 分批（CTPWA_WR_BATCH=500, phsp 1e4 → 20 批）与整批一致。
+
+    回归: computeResults 改为未归一输出 + host 统一归一后, 批处理与整批的
+    hfit 谱必须逐 bin 一致（相对差 < 1e-6; total 原子累加顺序差 ~1e-15）。
+    """
+    ana = make_analysis("plot_obs")
+    params = make_params(ana, device)
+    out_full = str(outputs_dir / "plot_obs_wr_full.root")
+    if os.path.exists(out_full):
+        os.remove(out_full)
+    os.environ.pop("CTPWA_WR_BATCH", None)
+    ana.writeResult(params, out_full, 0)
+
+    out_batch = str(outputs_dir / "plot_obs_wr_batch500.root")
+    if os.path.exists(out_batch):
+        os.remove(out_batch)
+    os.environ["CTPWA_WR_BATCH"] = "500"
+    try:
+        ana.writeResult(params, out_batch, 0)
+    finally:
+        del os.environ["CTPWA_WR_BATCH"]
+
+    with uproot.open(out_full) as f1, uproot.open(out_batch) as f2:
+        for d in ("m_KK", "cosbeta_KK", "obs3"):
+            v1 = f1[f"{d}/hfit"].values()
+            v2 = f2[f"{d}/hfit"].values()
+            denom = max(float(v1.sum()), 1e-30)
+            rel_sum = abs(float(v2.sum()) - float(v1.sum())) / denom
+            assert rel_sum < 1e-9, f"{d}: 总计数相对差 {rel_sum:.2e}"
+            mx = max(
+                abs(a - b) / max(abs(a), 1e-9) for a, b in zip(v1, v2)
+            ) if len(v1) else 0.0
+            assert mx < 1e-6, f"{d}: 逐 bin 最大相对差 {mx:.2e}"
