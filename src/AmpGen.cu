@@ -3295,6 +3295,8 @@ void AmpCalc::computeUnifiedHessian(
         int kUhChunk = 150000;
         if (const char* e = getenv("CTPWA_UH_CHUNK")) { int v = atoi(e); if (v > 0) kUhChunk = v; }
         for (int c0 = 0; c0 < nEv; c0 += kUhChunk) {
+            auto w_t0 = hprof ? std::chrono::high_resolution_clock::now()
+                              : std::chrono::high_resolution_clock::now();
             int nch = std::min(kUhChunk, nEv - c0);
             int evt_off_c = evt_off + c0;             // 全局绝对事件起点
             // 权重数组按段内事件索引 → 窗口起点偏移 c0（nullptr 原样）
@@ -3337,6 +3339,8 @@ void AmpCalc::computeUnifiedHessian(
             cudaDeviceSynchronize();
         }
 
+        auto w_t1 = hprof ? std::chrono::high_resolution_clock::now()
+                          : std::chrono::high_resolution_clock::now();  // cast+prepass 完
         temps_per_gpu[gpu].resize(blocks_.size());
 
         bool first_free_block = true;  // 每窗口重置：phsp_I 需每个窗口的 I 都累加一次
@@ -3563,6 +3567,8 @@ void AmpCalc::computeUnifiedHessian(
             fflush(stdout);
         }
 
+        auto w_t2 = hprof ? std::chrono::high_resolution_clock::now()
+                          : std::chrono::high_resolution_clock::now();  // stage1 块循环完
         // ===== Stage 2: cross-block Hessian =====
         auto t_s2 = std::chrono::high_resolution_clock::now();
         for (size_t bi = 0; bi < blocks_.size(); ++bi) {
@@ -3674,6 +3680,17 @@ void AmpCalc::computeUnifiedHessian(
             auto t_s3e = std::chrono::high_resolution_clock::now();
             printf("[PROF] UH gpu=%d stage3-4-mixed: %.2f ms\n", gpu,
                 std::chrono::duration<double, std::milli>(t_s3e - t_s3).count());
+            fflush(stdout);
+        }
+
+        if (hprof) {
+            auto w_te = std::chrono::high_resolution_clock::now();
+            auto wms = [](auto a, auto b) {
+                return std::chrono::duration<double, std::milli>(b - a).count(); };
+            printf("[PROF] UH win c0=%d nch=%d: cast+prep=%.2f | stage1-blkloop=%.2f"
+                   " | stage2-4=%.2f | window=%.2f ms\n",
+                   c0, nch, wms(w_t0, w_t1), wms(w_t1, w_t2), wms(w_t2, w_te),
+                   wms(w_t0, w_te));
             fflush(stdout);
         }
 
