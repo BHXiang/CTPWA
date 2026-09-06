@@ -2,7 +2,12 @@ import torch
 import numpy as np
 import time
 import os
+import sys
+import argparse
+import logging
 import ctpwa
+
+log = logging.getLogger("pwa-fit")
 
 # ============================================================
 # 初始化分析对象
@@ -27,51 +32,44 @@ print(f"耦合参数数量: {n_coupling_free}")
 print(f"共振态参数数量: {n_res_free}")
 
 # ============================================================
-# 生成初始参数
+# 生成初始参数（已移入 UnifiedPWAOptimizer.generate_initial_params）
+# 保留模块级函数作为向后兼容包装器
 # ============================================================
-def generate_initial_params(
-    n_coupling_free, free_res_info,
-    seed=42, device="cuda"
-):
-    """生成统一参数向量 [real_coupling | imag_coupling | theta]
-
-    Layout: [real_0,...,real_{n_free-1}, imag_0,...,imag_{n_free-1}, theta_0,...,theta_{n_res-1}]
-    real_0=1.0, imag_0=0.0 为固定参考振幅
-    """
+def generate_initial_params(n_coupling_free, free_res_info,
+                            seed=42, device="cuda"):
+    """向后兼容包装器。新代码请用 optimizer.generate_initial_params(seed)。"""
+    import warnings
+    warnings.warn(
+        "generate_initial_params() 已移入 UnifiedPWAOptimizer 类方法，"
+        "请直接使用 optimizer.generate_initial_params(seed=...)",
+        DeprecationWarning, stacklevel=2,
+    )
     n_res = free_res_info.shape[1]
     n_total = 2 * n_coupling_free + n_res
     params = torch.zeros(n_total, dtype=torch.float64, device=device)
-
     torch.manual_seed(seed)
-
-    # 耦合实部
-    params[0] = 1.0  # 固定参考
+    params[0] = 1.0
     for idx in range(1, n_coupling_free):
         amplitude = torch.rand(1, device=device).item() * 0.5
         phase = torch.rand(1, device=device).item() * 2 * torch.pi
         params[idx] = amplitude * np.cos(phase)
-
-    # 耦合虚部
-    params[n_coupling_free] = 0.0  # 固定参考
+    params[n_coupling_free] = 0.0
     for idx in range(1, n_coupling_free):
         amplitude = torch.rand(1, device=device).item() * 0.5
         phase = torch.rand(1, device=device).item() * 2 * torch.pi
         params[n_coupling_free + idx] = amplitude * np.sin(phase)
-
-    # 共振态参数
     if n_res > 0:
         init_vals = free_res_info[0].to(device=device, dtype=torch.float64)
         if seed > 42:
             torch.manual_seed(seed)
             lower = free_res_info[1].to(device=device, dtype=torch.float64)
             upper = free_res_info[2].to(device=device, dtype=torch.float64)
-            noise = (torch.rand(n_res, device=device, dtype=torch.float64) - 0.5) * 0.1 * (upper - lower)
+            noise = (torch.rand(n_res, device=device, dtype=torch.float64) - 0.5) \
+                    * 0.1 * (upper - lower)
             init_vals = torch.clamp(init_vals + noise,
                                     lower + 1e-7 * (upper - lower),
                                     upper - 1e-7 * (upper - lower))
         params[2 * n_coupling_free:] = init_vals
-
-    print(f"生成初始参数 (seed={seed}): n_coupling={n_coupling_free}, n_res={n_res}")
     return params
 
 
@@ -82,7 +80,8 @@ def generate_initial_params(
 # 优化器
 # ============================================================
 class UnifiedPWAOptimizer:
-    def __init__(self, ana, free_res_info, params_names):
+    def __init__(self, ana, free_res_info, params_names,
+                 v_max=None, project_grad=None):
         self.analysis = ana
         self.params_names = params_names
         self.device = "cuda"
@@ -94,14 +93,18 @@ class UnifiedPWAOptimizer:
         self.n_res_free = free_res_info.shape[1]
         self.n_params = 2 * self.n_coupling_free + self.n_res_free
         self.has_free_res = self.n_res_free > 0
+        # 保存 free_res_info 供 generate_initial_params 使用
+        self._free_res_info = free_res_info
         # 耦合幅度上界（防 LBFGS 放飞，实测随机初值放开共振态参数时
         # 耦合会无界增长到 1e14 → 振幅溢出）+ 投影梯度（防边界伪收敛）。
         # ⚠️ 默认 10000 而不能更小: 不同波的振幅归一化差异极大
         # （ONE 模型/弱归一化波如 PHSP 需要 |v|~300-1000，实测本模型
         # 最佳解 |A| 达 297；v_max=50 会把它们掐死在墙上，模型形状被
-        # 强制扭曲 → 拟合直接失败/正 NLL）。FIT_VMAX / FIT_PROJECT 可覆盖。
-        self.v_max = float(os.environ.get("FIT_VMAX", "10000.0"))
-        self.project_grad = os.environ.get("FIT_PROJECT", "1") == "1"
+        # 强制扭曲 → 拟合直接失败/正 NLL）。
+        # 优先级: 构造参数 > FIT_VMAX/FIT_PROJECT 环境变量 > 默认值
+        self.v_max = v_max if v_max is not None else float(os.environ.get("FIT_VMAX", "10000.0"))
+        _pg = project_grad if project_grad is not None else os.environ.get("FIT_PROJECT", "1")
+        self.project_grad = _pg if isinstance(_pg, bool) else str(_pg) == "1"
         # 统一 Hessian 缓存: 同参数点只在第一次真正计算一步 getHessian，
         # 后续（正定性判定/参数误差/分支比误差）直接复用。
         self._hess_cache = None  # (params.clone(), hessian_full)
@@ -110,6 +113,56 @@ class UnifiedPWAOptimizer:
         if self.has_free_res:
             self._lower = free_res_info[1].to(dtype=torch.float64, device=self.device)
             self._upper = free_res_info[2].to(dtype=torch.float64, device=self.device)
+
+    # --------------------------------------------------------
+    def generate_initial_params(self, seed=42):
+        """生成统一参数向量 [real_coupling | imag_coupling | theta]。
+
+        Layout: [real_0,...,real_{n_free-1}, imag_0,...,imag_{n_free-1},
+                 theta_0,...,theta_{n_res-1}]
+        real_0=1.0, imag_0=0.0 为固定参考振幅。
+        seed=42 时共振态参数取 PDG 初值；seed>42 时在 bounds 内加 10% 噪声。
+        """
+        free_res_info = self._free_res_info
+        n_coupling_free = self.n_coupling_free
+        device = self.device
+
+        n_res = free_res_info.shape[1]
+        n_total = 2 * n_coupling_free + n_res
+        params = torch.zeros(n_total, dtype=torch.float64, device=device)
+
+        torch.manual_seed(seed)
+
+        # 耦合实部
+        params[0] = 1.0  # 固定参考
+        for idx in range(1, n_coupling_free):
+            amplitude = torch.rand(1, device=device).item() * 0.5
+            phase = torch.rand(1, device=device).item() * 2 * torch.pi
+            params[idx] = amplitude * np.cos(phase)
+
+        # 耦合虚部
+        params[n_coupling_free] = 0.0  # 固定参考
+        for idx in range(1, n_coupling_free):
+            amplitude = torch.rand(1, device=device).item() * 0.5
+            phase = torch.rand(1, device=device).item() * 2 * torch.pi
+            params[n_coupling_free + idx] = amplitude * np.sin(phase)
+
+        # 共振态参数
+        if n_res > 0:
+            init_vals = free_res_info[0].to(device=device, dtype=torch.float64)
+            if seed > 42:
+                torch.manual_seed(seed)
+                lower = free_res_info[1].to(device=device, dtype=torch.float64)
+                upper = free_res_info[2].to(device=device, dtype=torch.float64)
+                noise = (torch.rand(n_res, device=device, dtype=torch.float64) - 0.5) \
+                        * 0.1 * (upper - lower)
+                init_vals = torch.clamp(init_vals + noise,
+                                        lower + 1e-7 * (upper - lower),
+                                        upper - 1e-7 * (upper - lower))
+            params[2 * n_coupling_free:] = init_vals
+
+        print(f"生成初始参数 (seed={seed}): n_coupling={n_coupling_free}, n_res={n_res}")
+        return params
 
     # --------------------------------------------------------
     def compute_loss_and_grad(self, params):
@@ -262,7 +315,7 @@ class UnifiedPWAOptimizer:
                     res_start = 2 * n_c_var
                     res_errors = std_dev[res_start:].float()
             except Exception as e:
-                print(f"计算参数误差时出错: {e}")
+                log.error(f"计算参数误差时出错: {e}")
 
         result = {
             "run_id": run_id,
@@ -350,7 +403,7 @@ class UnifiedPWAOptimizer:
                 if nll_cand < nll_best - tol:
                     best, nll_best = cand, nll_cand
                     if verbose:
-                        print(f"[polish] step{step}: Newton accept, NLL={nll_best:.6f}")
+                        log.debug(f"[polish] step{step}: Newton accept, NLL={nll_best:.6f}")
                 break
 
             lam = max(lam, -eig_min + 1e-6)
@@ -367,11 +420,11 @@ class UnifiedPWAOptimizer:
                 best, nll_best = cand, nll_cand
                 lam = max(lam * 0.3, 1e-6)
                 if verbose:
-                    print(f"[polish] step{step}: accept λ={lam:.2e}, NLL={nll_best:.6f}")
+                    log.debug(f"[polish] step{step}: accept λ={lam:.2e}, NLL={nll_best:.6f}")
             else:
                 lam *= 10.0
                 if verbose:
-                    print(f"[polish] step{step}: reject, λ={lam:.2e}")
+                    log.debug(f"[polish] step{step}: reject, λ={lam:.2e}")
                 if lam > 1e10:
                     break
 
@@ -429,7 +482,7 @@ class UnifiedPWAOptimizer:
                 res_errors = std_dev[res_start:].float()
             return coupling_real_errors, coupling_imag_errors, res_errors
         except Exception as e:
-            print(f"计算参数误差时出错: {e}")
+            log.error(f"计算参数误差时出错: {e}")
             return None, None, None
 
     # --------------------------------------------------------
@@ -452,7 +505,7 @@ class UnifiedPWAOptimizer:
         误差传播用拟合同源的统一 Hessian（缓存命中直接复用）。"""
         if params is None:
             if self.best_params is None:
-                print("没有优化结果!")
+                log.warning("没有优化结果!")
                 return None, None
             params = self.best_params
 
@@ -465,8 +518,8 @@ class UnifiedPWAOptimizer:
         # （早期拟合不带 mctruth）→ 这里自然跳过, 不抛异常、不触碰相关 kernel
         ff_result = self.analysis.getFitFractions(coupling, hessian_full)
         if ff_result is None or ff_result.numel() == 0:
-            print("跳过拟合分数: 配置没有 phsp_truth (无效率相空间 MC), "
-                  "需要时再加入并重跑")
+            log.warning("跳过拟合分数: 配置没有 phsp_truth (无效率相空间 MC), "
+                        "需要时再加入并重跑")
             return None, None
         return ff_result[:, 0], ff_result[:, 1]
 
@@ -480,7 +533,7 @@ class UnifiedPWAOptimizer:
         配置缺 phsp 或 phsp_truth 时返回空张量 [0,2] → 这里自然跳过。"""
         if params is None:
             if self.best_params is None:
-                print("没有优化结果!")
+                log.warning("没有优化结果!")
                 return None, None
             params = self.best_params
 
@@ -488,7 +541,7 @@ class UnifiedPWAOptimizer:
         hessian_full = self._get_hessian_cached(params)
         eff_result = self.analysis.getEfficiency(coupling, hessian_full)
         if eff_result is None or eff_result.numel() == 0:
-            print("跳过分波效率: 配置缺 phsp (带效率 MC) 或 phsp_truth, "
+            log.warning("跳过分波效率: 配置缺 phsp (带效率 MC) 或 phsp_truth, "
                   "需要时再加入并重跑")
             return None, None
         return eff_result[:, 0], eff_result[:, 1]
@@ -562,7 +615,7 @@ class UnifiedPWAOptimizer:
                 print(f"参数文件已创建: {txt_filename}")
             return True
         except Exception as e:
-            print(f"保存参数失败: {e}")
+            log.error(f"保存参数失败: {e}")
             return False
 
     # --------------------------------------------------------
@@ -585,15 +638,16 @@ class UnifiedPWAOptimizer:
                 f.write("#" * 60 + "\n")
             return True
         except Exception as e:
-            print(f"保存NLL历史失败: {e}")
+            log.error(f"保存NLL历史失败: {e}")
             return False
 
     # --------------------------------------------------------
-    def save_weight_file(self, params, filename, waves=None):
+    def save_weight_file(self, params, filename, waves=None, event_data=None):
         """保存权重文件。先reCalcAmp再writeResult。
         waves: 可选分波下标子集（如 [6,7]）, 只画 |Σ_{i∈S}A_i·v_i|² 的分布,
-        空=全部。FIT_WAVES="6,7" 环境变量也可指定。
-        FIT_EVENT_DATA=1 时 TTree 额外含末态四动量(任意分布按需现算);
+        空=全部。优先级: 参数 > FIT_WAVES 环境变量 > 默认(全部)。
+        event_data: True 时 TTree 额外含末态四动量(任意分布按需现算)。
+        优先级: 参数 > FIT_EVENT_DATA 环境变量 > 默认(False)。
         逐事件干涉 (interf_<i>_<j>) 请用 write_interf_result(pairs) 按需导出。"""
         try:
             if waves is None:
@@ -602,7 +656,9 @@ class UnifiedPWAOptimizer:
             if self.has_free_res:
                 theta = self.extract_theta_phys(params)
                 self.analysis.reCalcAmp(theta)
-            flag = 1 if os.environ.get("FIT_EVENT_DATA", "0") == "1" else 0
+            if event_data is None:
+                event_data = os.environ.get("FIT_EVENT_DATA", "0") == "1"
+            flag = 1 if event_data else 0
             self.analysis.writeResult(params, filename, flag, waves)
             if waves:
                 print(f"权重文件已保存: {filename} (waves 子集: {waves}, "
@@ -611,37 +667,53 @@ class UnifiedPWAOptimizer:
                 print(f"权重文件已保存: {filename}")
             return True
         except Exception as e:
-            print(f"保存权重文件失败 {filename}: {e}")
+            log.error(f"保存权重文件失败 {filename}: {e}")
             return False
 
     # --------------------------------------------------------
-    def run_multiple_optimizations(self, num_runs=10, warm_start=None, **kwargs):
+    def run_multiple_optimizations(self, num_runs=10, warm_start=None,
+                                    output_dir="results",
+                                    checkpoint_interval=1,
+                                    resume_from=None, **kwargs):
+        """多次优化运行。
+
+        Args:
+            checkpoint_interval: 每 N 轮保存一次 checkpoint（默认 1 = 每轮都存）。
+            resume_from: dict，含 'start_run' 和 'all_nlls' 等续跑状态；
+                         None 则从头开始。
+        """
         results = []
-        output_dir = "results"
         os.makedirs(output_dir, exist_ok=True)
 
         params_filename = os.path.join(output_dir, "parameters.txt")
         nll_filename = os.path.join(output_dir, "nll_history.txt")
         checkpoint = os.path.join(output_dir, "best_params.pt")
+        resume_file = os.path.join(output_dir, "checkpoint.pt")
 
-        for i in range(num_runs):
+        # 续跑: 恢复已有结果
+        start_run = 0
+        if resume_from is not None:
+            start_run = resume_from.get("start_run", 0)
+            self.best_nll = resume_from.get("best_nll", float("inf"))
+            bp = resume_from.get("best_params")
+            if bp is not None:
+                self.best_params = bp.to(self.device)
+            print(f"续跑: 从 run {start_run} 继续，已有 best_nll={self.best_nll:.6f}")
+
+        for i in range(start_run, num_runs):
             print(f"\n{'='*80}")
             print(f"开始第 {i}/{num_runs-1} 次优化")
             print(f"{'='*80}")
 
             seed = 42 if i == 0 else 42 + i
-            initial_params = generate_initial_params(
-                self.n_coupling_free, free_res_info,
-                seed=seed, device=self.device,
-            )
+            initial_params = self.generate_initial_params(seed=seed)
             # warm start: run 0 的耦合取自收敛解（共振态参数保持 PDG 初值）。
             # 实测: 随机初值 + 放开共振态参数时 LBFGS 沿平坦方向放飞
             # （NLL 正值/撞边界）；从已收敛耦合出发则稳定收敛。
-            # FIT_WARM=1 时自动用 results/best_params.pt 作为 warm start。
             if i == 0 and warm_start is not None:
                 w = warm_start.to(self.device)
                 initial_params[:2 * self.n_coupling_free] = w[:2 * self.n_coupling_free]
-                print(f"warm start: 耦合来自收敛解 (NLL 优于随机初值的放飞解)")
+                print("warm start: 耦合来自收敛解 (NLL 优于随机初值的放飞解)")
 
             try:
                 result = self.optimize_single_run(initial_params, run_id=i, **kwargs)
@@ -664,10 +736,21 @@ class UnifiedPWAOptimizer:
 
                 self.save_nll_history(result["nll_history"], i,
                                       nll_filename.replace(".txt", ""))
+
+                # checkpoint: 按间隔保存 best_params + 续跑状态
                 if result["final_nll"] <= self.best_nll:
                     torch.save(result["final_params"].cpu(), checkpoint)
+                if (i + 1) % checkpoint_interval == 0 or i == num_runs - 1:
+                    torch.save({
+                        "start_run": i + 1,
+                        "best_nll": self.best_nll,
+                        "best_params": self.best_params.cpu() if self.best_params is not None else None,
+                        "all_nlls": [r["final_nll"] for r in self.all_results],
+                    }, resume_file)
+                    log.debug(f"checkpoint 已保存: {resume_file}")
+
             except Exception as e:
-                print(f"第 {i} 次优化失败: {e}")
+                log.error(f"第 {i} 次优化失败: {e}")
                 import traceback
                 traceback.print_exc()
                 continue
@@ -680,7 +763,7 @@ class UnifiedPWAOptimizer:
                                    run_id=None):
         if params is None:
             if self.best_params is None:
-                print("没有优化结果!")
+                log.warning("没有优化结果!")
                 return
             params = self.best_params
             run_info = "最佳"
@@ -738,13 +821,15 @@ class UnifiedPWAOptimizer:
     # --------------------------------------------------------
     def save_all_results_summary(self, fit_values=None, fit_errors=None,
                                  fit_attempted=False,
-                                 eff_values=None, eff_errors=None):
+                                 eff_values=None, eff_errors=None,
+                                 output_dir="results"):
         if not self.all_results:
-            print("没有结果!")
+            log.warning("没有结果!")
             return
 
         sorted_results = sorted(self.all_results, key=lambda x: x["final_nll"])
-        summary_file = "results/optimization_summary.txt"
+        os.makedirs(output_dir, exist_ok=True)
+        summary_file = os.path.join(output_dir, "optimization_summary.txt")
         with open(summary_file, "w") as f:
             f.write("PWA优化结果\n")
             f.write("=" * 100 + "\n")
@@ -809,130 +894,420 @@ class UnifiedPWAOptimizer:
 
 
 # ============================================================
+# CLI 参数解析
+# ============================================================
+def _env_float(name, default):
+    """从环境变量读 float，不存在则返回 default。"""
+    v = os.environ.get(name)
+    return float(v) if v is not None else default
+
+
+def _env_int(name, default):
+    """从环境变量读 int，不存在则返回 default。"""
+    v = os.environ.get(name)
+    return int(v) if v is not None else default
+
+
+def _env_bool(name, default):
+    """从环境变量读 bool（"1"/"true"/"yes" → True），不存在则返回 default。"""
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v.lower() in ("1", "true", "yes")
+
+
+def _env_str(name, default=""):
+    """从环境变量读字符串，不存在则返回 default。"""
+    return os.environ.get(name, default)
+
+
+def build_parser():
+    """构建 argparse 解析器。所有参数均支持同名 FIT_* 环境变量作为 fallback。"""
+    p = argparse.ArgumentParser(
+        description="ctpwa PWA 拟合驱动",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+环境变量 fallback:
+  每个 CLI 参数都有对应的 FIT_* 环境变量，优先级: CLI > 环境变量 > 默认值。
+  FIT_RUNS, FIT_NITER, FIT_LR, FIT_TOL_GRAD, FIT_TOL_CHANGE,
+  FIT_HISTORY_SIZE, FIT_VMAX, FIT_PROJECT, FIT_WAVES, FIT_EVENT_DATA,
+  FIT_WARM, FIT_POLISH, FIT_CHECKPOINT_INTERVAL
+
+示例:
+  # 快速扫描（早期调试）
+  python fit.py --runs 3 --niter 100 --no-polish
+
+  # 正式拟合
+  python fit.py --runs 10 --niter 500
+
+  # warm start 继续优化
+  python fit.py --runs 5 --niter 1000 --warm-start results/best_params.pt
+
+  # 只画特定波
+  python fit.py --runs 1 --niter 500 --waves 6,7
+
+  # 断点续跑（从上次中断处继续）
+  python fit.py --runs 20 --niter 500 --resume
+
+  # 安静模式 + 指定配置
+  python fit.py -q --config /path/to/config.yml --runs 10
+""",
+    )
+
+    # --- 配置 ---
+    p.add_argument("--config", type=str, default="config.yml",
+                   help="config.yml 路径 (默认: 当前目录下的 config.yml)")
+
+    # --- 日志 ---
+    g_log = p.add_mutually_exclusive_group()
+    g_log.add_argument("-v", "--verbose", action="count", default=0,
+                       help="增加日志详细度 (-v info, -vv debug)")
+    g_log.add_argument("-q", "--quiet", action="store_true", default=False,
+                       help="安静模式，只输出最终结果")
+
+    # --- 核心运行参数 ---
+    p.add_argument("--runs", type=int, default=None,
+                   help="优化运行次数 (env: FIT_RUNS, 默认: 10)")
+    p.add_argument("--niter", type=int, default=None,
+                   help="LBFGS 最大迭代次数 (env: FIT_NITER, 默认: 500)")
+    p.add_argument("--lr", type=float, default=None,
+                   help="LBFGS 学习率 (env: FIT_LR, 默认: 0.9)")
+    p.add_argument("--tol-grad", type=float, default=None,
+                   help="LBFGS 梯度收敛阈值 (env: FIT_TOL_GRAD, 默认: 1e-7)")
+    p.add_argument("--tol-change", type=float, default=None,
+                   help="LBFGS 参数变化收敛阈值 (env: FIT_TOL_CHANGE, 默认: 1e-9)")
+    p.add_argument("--history-size", type=int, default=None,
+                   help="LBFGS history 大小 (env: FIT_HISTORY_SIZE, 默认: 100)")
+
+    # --- 约束 / 数值稳定 ---
+    p.add_argument("--vmax", type=float, default=None,
+                   help="耦合幅度上界 |v| <= vmax (env: FIT_VMAX, 默认: 10000)")
+    p.add_argument("--no-project", action="store_true", default=None,
+                   help="关闭投影梯度 (env: FIT_PROJECT=0)")
+
+    # --- Warm start ---
+    p.add_argument("--warm-start", nargs="?", const="auto", default=None,
+                   help="Warm start 路径。无参数时自动用 results/best_params.pt "
+                        "(env: FIT_WARM=1)")
+
+    # --- Polish ---
+    g_polish = p.add_mutually_exclusive_group()
+    g_polish.add_argument("--polish", dest="polish", action="store_true", default=None,
+                          help="启用 damped Newton 抛光 (env: FIT_POLISH=1, 默认开启)")
+    g_polish.add_argument("--no-polish", dest="polish", action="store_false",
+                          help="关闭抛光")
+
+    # --- 权重文件选项 ---
+    p.add_argument("--waves", type=str, default=None,
+                   help="分波下标子集，逗号分隔 (env: FIT_WAVES, 如 '6,7')")
+    p.add_argument("--event-data", action="store_true", default=None,
+                   help="TTree 额外含末态四动量 (env: FIT_EVENT_DATA=1)")
+
+    # --- Checkpoint / Resume ---
+    p.add_argument("--checkpoint-interval", type=int, default=None,
+                   help="每 N 轮保存一次 checkpoint (env: FIT_CHECKPOINT_INTERVAL, 默认: 1)")
+    p.add_argument("--resume", action="store_true", default=False,
+                   help="从 output-dir/checkpoint.pt 续跑")
+
+    # --- 输出 ---
+    p.add_argument("--output-dir", type=str, default="results",
+                   help="输出目录 (默认: results)")
+
+    return p
+
+
+def resolve_args(args):
+    """将 argparse Namespace 与环境变量合并，返回最终配置 dict。
+    优先级: CLI 显式传入 > FIT_* 环境变量 > 硬编码默认值。"""
+    cfg = {}
+
+    cfg["num_runs"] = (args.runs if args.runs is not None
+                       else _env_int("FIT_RUNS", 10))
+    cfg["max_iter"] = (args.niter if args.niter is not None
+                       else _env_int("FIT_NITER", 500))
+    cfg["lr"] = (args.lr if args.lr is not None
+                 else _env_float("FIT_LR", 0.9))
+    cfg["tolerance_grad"] = (args.tol_grad if args.tol_grad is not None
+                             else _env_float("FIT_TOL_GRAD", 1e-7))
+    cfg["tolerance_change"] = (args.tol_change if args.tol_change is not None
+                               else _env_float("FIT_TOL_CHANGE", 1e-9))
+    cfg["history_size"] = (args.history_size if args.history_size is not None
+                           else _env_int("FIT_HISTORY_SIZE", 100))
+
+    cfg["v_max"] = (args.vmax if args.vmax is not None
+                    else _env_float("FIT_VMAX", 10000.0))
+
+    # project_grad: CLI --no-project → False; 否则看 FIT_PROJECT
+    if args.no_project is True:
+        cfg["project_grad"] = False
+    else:
+        cfg["project_grad"] = _env_bool("FIT_PROJECT", True)
+
+    # polish: CLI --polish/--no-polish > FIT_POLISH > 默认 True
+    if args.polish is not None:
+        cfg["polish"] = args.polish
+    else:
+        cfg["polish"] = _env_bool("FIT_POLISH", True)
+
+    # warm start
+    if args.warm_start is not None:
+        if args.warm_start == "auto":
+            cfg["warm_start_path"] = os.path.join(cfg.get("_output_dir", "results"),
+                                                  "best_params.pt")
+        else:
+            cfg["warm_start_path"] = args.warm_start
+    elif _env_bool("FIT_WARM", False):
+        cfg["warm_start_path"] = os.path.join("results", "best_params.pt")
+    else:
+        cfg["warm_start_path"] = None
+
+    # waves
+    if args.waves is not None:
+        cfg["waves"] = [int(x.strip()) for x in args.waves.split(",") if x.strip()]
+    else:
+        w = _env_str("FIT_WAVES", "").strip()
+        cfg["waves"] = [int(x) for x in w.split(",") if x.strip()] if w else []
+
+    # event data
+    if args.event_data is not None:
+        cfg["event_data"] = args.event_data
+    else:
+        cfg["event_data"] = _env_bool("FIT_EVENT_DATA", False)
+
+    # checkpoint interval
+    cfg["checkpoint_interval"] = (args.checkpoint_interval if args.checkpoint_interval is not None
+                                  else _env_int("FIT_CHECKPOINT_INTERVAL", 1))
+
+    cfg["resume"] = args.resume
+    cfg["config"] = args.config
+    cfg["verbose"] = args.verbose
+    cfg["quiet"] = args.quiet
+    cfg["output_dir"] = args.output_dir
+
+    return cfg
+
+
+# ============================================================
 # 主程序
 # ============================================================
-optimizer = UnifiedPWAOptimizer(
-    ana, free_res_info, params_names
-)
-
-# warm start: FIT_WARM=1 时用上次拟合的 results/best_params.pt
-# （阶段式拟合: 先固定共振态参数拟合耦合, 再放开共振态参数 warm start,
-#  可避免随机初值 + 放开共振态参数时的 LBFGS 放飞）
-warm = None
-if os.environ.get("FIT_WARM", "0") == "1":
-    cp = os.path.join("results", "best_params.pt")
-    if os.path.exists(cp):
-        warm = torch.load(cp, weights_only=True)
-        print(f"FIT_WARM: 从 {cp} 载入耦合作为 run 0 初值")
-
-results = optimizer.run_multiple_optimizations(
-    num_runs=1,
-    max_iter=10000,
-    lr=0.9,
-    tolerance_grad=1e-10,
-    tolerance_change=1e-10,
-    history_size=500,
-    warm_start=warm,
-)
-
-# 分析结果
-print(f"\n{'='*80}")
-print("所有优化结果总结:")
-print(f"{'='*80}")
-
-sorted_results = sorted(optimizer.all_results, key=lambda x: x["final_nll"])
-for i, res in enumerate(sorted_results):
-    print(f"运行 {res['run_id']:2d}: NLL = {res['final_nll']:12.6f}, "
-          f"迭代 = {res['iterations']:3d}, "
-          f"耗时 = {res['time']:6.2f}s, Hessian = {res['hessian_time']:6.2f}s, "
-          f"正定 = {res['is_positive_definite']}")
-
-print(f"\n{'='*80}")
-print("最佳结果:")
-print(f"{'='*80}")
-
-best_res = sorted_results[0]
-print(f"最佳NLL: {best_res['final_nll']:.6f} (来自第 {best_res['run_id']} 次运行)")
-# print(f"Hessian正定性: {best_res['is_positive_definite']}")
-# print(f"Hessian条件数: {best_res['condition_number']:.2e}")
-
-# 精确 Hessian 抛光（FIT_POLISH=0 关闭）:
-# LBFGS 常在宽容差/平坦方向提前停住（正定性=False）；
-# damped Newton 用精确 Hessian 能继续大幅下降 NLL 并逼近正定极小值。
-if os.environ.get("FIT_POLISH", "1") == "1":
-    try:
-        p2, nll2, pd2 = optimizer.polish_damped_newton(best_res["final_params"])
-        if nll2 < best_res["final_nll"]:
-            print(f"抛光: NLL {best_res['final_nll']:.6f} → {nll2:.6f} "
-                  f"(Δ={nll2 - best_res['final_nll']:.3f}), 正定={pd2}")
-            best_res["final_params"] = p2.clone()
-            best_res["final_nll"] = nll2
-            best_res["is_positive_definite"] = pd2
-            if pd2:
-                (best_res["coupling_real_errors"],
-                 best_res["coupling_imag_errors"],
-                 best_res["res_errors"]) = optimizer.compute_param_errors(p2)
-            else:
-                best_res["coupling_real_errors"] = None
-                best_res["coupling_imag_errors"] = None
-                best_res["res_errors"] = None
-            torch.save(p2.cpu(), os.path.join("results", "best_params.pt"))
-    except Exception as e:
-        print(f"抛光失败: {e}")
-
-# 打印最佳参数
-if best_res["is_positive_definite"] and best_res["coupling_real_errors"] is not None:
-    optimizer.print_optimized_parameters(
-        best_res["final_params"],
-        best_res["coupling_real_errors"],
-        best_res["coupling_imag_errors"],
-        best_res["res_errors"],
-        best_res["run_id"],
+def _setup_logging(verbose, quiet):
+    """根据 -v/-q 设置日志级别。"""
+    if quiet:
+        level = logging.WARNING
+    elif verbose >= 2:
+        level = logging.DEBUG
+    elif verbose >= 1:
+        level = logging.INFO
+    else:
+        level = logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(levelname)-5s %(message)s",
+        force=True,  # 覆盖可能已有的 basicConfig
     )
-else:
-    print(f"\n⚠️ Hessian矩阵不正定，无法提供参数误差估计")
-    optimizer.print_optimized_parameters(best_res["final_params"])
-print(f"{'='*80}")
 
-# 保存最佳权重文件
-best_weight_file = "results/weight_best.root"
-optimizer.save_weight_file(best_res["final_params"], best_weight_file)
 
-# 拟合分数（主输出: 无效率、与 MC 无关、跨实验可比; 只算一次,
-# 主程序打印 + 摘要文件共用, 避免 truth 积分重复计算）
-# 配置无 phsp_truth 时 getFitFractions 返回空张量 → compute_fit_fractions 自然跳过
-ff_values = ff_errors = None
-if best_res["is_positive_definite"]:
-    try:
-        ff_values, ff_errors = optimizer.compute_fit_fractions(
-            best_res["final_params"]
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    cfg = resolve_args(args)
+
+    # ---- P4.3: 日志分级 ----
+    _setup_logging(cfg["verbose"], cfg["quiet"])
+
+    # ---- P4.2: 配置文件路径 ----
+    config_path = os.path.abspath(cfg["config"])
+    if not os.path.isfile(config_path):
+        log.error(f"配置文件不存在: {config_path}")
+        sys.exit(1)
+    config_dir = os.path.dirname(config_path)
+    if os.getcwd() != config_dir:
+        print(f"切换到配置目录: {config_dir}")
+        os.chdir(config_dir)
+
+    # ---- P4.1: GPU 前置检查 ----
+    if not torch.cuda.is_available():
+        log.error("未检测到 CUDA GPU。ctpwa 需要 GPU 加速。")
+        log.error(f"  PyTorch version: {torch.__version__}")
+        log.error(f"  CUDA available:  {torch.cuda.is_available()}")
+        sys.exit(1)
+    gpu_name = torch.cuda.get_device_name(0)
+    print(f"GPU: {gpu_name}")
+
+    output_dir = cfg["output_dir"]
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 打印最终配置
+    print("=" * 60)
+    print("PWA 拟合配置:")
+    print(f"  config={config_path}")
+    print(f"  runs={cfg['num_runs']}, niter={cfg['max_iter']}, lr={cfg['lr']}")
+    print(f"  tol_grad={cfg['tolerance_grad']:.1e}, "
+          f"tol_change={cfg['tolerance_change']:.1e}, "
+          f"history_size={cfg['history_size']}")
+    print(f"  vmax={cfg['v_max']}, project_grad={cfg['project_grad']}")
+    print(f"  polish={cfg['polish']}")
+    print(f"  warm_start={cfg['warm_start_path']}")
+    print(f"  waves={cfg['waves'] if cfg['waves'] else '(all)'}")
+    print(f"  event_data={cfg['event_data']}")
+    print(f"  checkpoint_interval={cfg['checkpoint_interval']}")
+    print(f"  resume={cfg['resume']}")
+    print(f"  output_dir={output_dir}")
+    print("=" * 60)
+
+    # 复用模块级已初始化的分析对象（避免二次初始化浪费显存）
+    # 模块级 ana / params_names / free_res_info 在 import 时已创建
+    print(f"耦合参数数量: {n_coupling_free}, "
+          f"共振态参数数量: {n_res_free}")
+
+    # 初始化优化器
+    optimizer = UnifiedPWAOptimizer(
+        ana, free_res_info, params_names,
+        v_max=cfg["v_max"],
+        project_grad=cfg["project_grad"],
+    )
+
+    # ---- P4.4: Resume ----
+    resume_from = None
+    resume_file = os.path.join(output_dir, "checkpoint.pt")
+    if cfg["resume"]:
+        if os.path.exists(resume_file):
+            ckpt = torch.load(resume_file, weights_only=False)
+            resume_from = ckpt
+            print(f"Resume: 加载 checkpoint ({resume_file}), "
+                  f"从 run {ckpt.get('start_run', 0)} 继续")
+        else:
+            log.warning(f"Resume 请求但 checkpoint 不存在: {resume_file}，从头开始")
+
+    # warm start
+    warm = None
+    ws_path = cfg["warm_start_path"]
+    if ws_path and os.path.exists(ws_path):
+        warm = torch.load(ws_path, weights_only=True)
+        print(f"Warm start: 从 {ws_path} 载入耦合作为 run 0 初值")
+    elif ws_path:
+        log.warning(f"Warm start 文件不存在: {ws_path}，使用随机初值")
+
+    # 运行优化
+    results = optimizer.run_multiple_optimizations(
+        num_runs=cfg["num_runs"],
+        max_iter=cfg["max_iter"],
+        lr=cfg["lr"],
+        tolerance_grad=cfg["tolerance_grad"],
+        tolerance_change=cfg["tolerance_change"],
+        history_size=cfg["history_size"],
+        warm_start=warm,
+        output_dir=output_dir,
+        checkpoint_interval=cfg["checkpoint_interval"],
+        resume_from=resume_from,
+    )
+
+    # ---- 分析结果 ----
+    if not optimizer.all_results:
+        log.error("没有任何成功的优化结果!")
+        sys.exit(1)
+
+    print(f"\n{'='*80}")
+    print("所有优化结果总结:")
+    print(f"{'='*80}")
+
+    sorted_results = sorted(optimizer.all_results, key=lambda x: x["final_nll"])
+    for i, res in enumerate(sorted_results):
+        print(f"运行 {res['run_id']:2d}: NLL = {res['final_nll']:12.6f}, "
+              f"迭代 = {res['iterations']:3d}, "
+              f"耗时 = {res['time']:6.2f}s, Hessian = {res['hessian_time']:6.2f}s, "
+              f"正定 = {res['is_positive_definite']}")
+
+    print(f"\n{'='*80}")
+    print("最佳结果:")
+    print(f"{'='*80}")
+
+    best_res = sorted_results[0]
+    print(f"最佳NLL: {best_res['final_nll']:.6f} (来自第 {best_res['run_id']} 次运行)")
+
+    # ---- 精确 Hessian 抛光 ----
+    if cfg["polish"]:
+        try:
+            p2, nll2, pd2 = optimizer.polish_damped_newton(best_res["final_params"])
+            if nll2 < best_res["final_nll"]:
+                print(f"抛光: NLL {best_res['final_nll']:.6f} → {nll2:.6f} "
+                      f"(Δ={nll2 - best_res['final_nll']:.3f}), 正定={pd2}")
+                best_res["final_params"] = p2.clone()
+                best_res["final_nll"] = nll2
+                best_res["is_positive_definite"] = pd2
+                if pd2:
+                    (best_res["coupling_real_errors"],
+                     best_res["coupling_imag_errors"],
+                     best_res["res_errors"]) = optimizer.compute_param_errors(p2)
+                else:
+                    best_res["coupling_real_errors"] = None
+                    best_res["coupling_imag_errors"] = None
+                    best_res["res_errors"] = None
+                torch.save(p2.cpu(), os.path.join(output_dir, "best_params.pt"))
+        except Exception as e:
+            log.error(f"抛光失败: {e}")
+
+    # ---- 打印最佳参数 ----
+    if best_res["is_positive_definite"] and best_res["coupling_real_errors"] is not None:
+        optimizer.print_optimized_parameters(
+            best_res["final_params"],
+            best_res["coupling_real_errors"],
+            best_res["coupling_imag_errors"],
+            best_res["res_errors"],
+            best_res["run_id"],
         )
-        if ff_values is not None:
-            print(f"\n{'='*80}")
-            print("最佳结果的拟合分数 (fit fractions, Σ=1, 无效率/MC无关):")
-            print(f"{'='*80}")
-            for i in range(len(ff_values)):
-                print(f"{i:2d}: {ff_values[i]:.6f} ± {ff_errors[i]:.6f}")
-    except Exception as e:
-        print(f"计算拟合分数失败: {e}")
+    else:
+        log.warning("Hessian矩阵不正定，无法提供参数误差估计")
+        optimizer.print_optimized_parameters(best_res["final_params"])
+    print(f"{'='*80}")
 
-# 分波效率（主输出: 各道探测/选择效率, 依赖拟合结果; 与 FF 共用一次
-# Hessian 缓存; 配置缺 phsp/phsp_truth 时 getEfficiency 返回空张量 → 自然跳过）
-eff_values = eff_errors = None
-if best_res["is_positive_definite"]:
-    try:
-        eff_values, eff_errors = optimizer.compute_efficiency(
-            best_res["final_params"]
-        )
-        if eff_values is not None:
-            print(f"\n{'='*80}")
-            print("最佳结果的分波效率 (ε_i, phsp/phsp_truth 加权比值):")
-            print(f"{'='*80}")
-            for i in range(len(eff_values)):
-                print(f"{i:2d}: {eff_values[i]:.6f} ± {eff_errors[i]:.6f}")
-    except Exception as e:
-        print(f"计算分波效率失败: {e}")
+    # ---- 保存最佳权重文件 ----
+    best_weight_file = os.path.join(output_dir, "weight_best.root")
+    optimizer.save_weight_file(
+        best_res["final_params"], best_weight_file,
+        waves=cfg["waves"],
+        event_data=cfg["event_data"],
+    )
 
-# 保存摘要
-optimizer.save_all_results_summary(ff_values, ff_errors, fit_attempted=True,
-                                   eff_values=eff_values, eff_errors=eff_errors)
+    # ---- 拟合分数 ----
+    ff_values = ff_errors = None
+    if best_res["is_positive_definite"]:
+        try:
+            ff_values, ff_errors = optimizer.compute_fit_fractions(
+                best_res["final_params"]
+            )
+            if ff_values is not None:
+                print(f"\n{'='*80}")
+                print("最佳结果的拟合分数 (fit fractions, Σ=1, 无效率/MC无关):")
+                print(f"{'='*80}")
+                for i in range(len(ff_values)):
+                    print(f"{i:2d}: {ff_values[i]:.6f} ± {ff_errors[i]:.6f}")
+        except Exception as e:
+            log.error(f"计算拟合分数失败: {e}")
+
+    # ---- 分波效率 ----
+    eff_values = eff_errors = None
+    if best_res["is_positive_definite"]:
+        try:
+            eff_values, eff_errors = optimizer.compute_efficiency(
+                best_res["final_params"]
+            )
+            if eff_values is not None:
+                print(f"\n{'='*80}")
+                print("最佳结果的分波效率 (ε_i, phsp/phsp_truth 加权比值):")
+                print(f"{'='*80}")
+                for i in range(len(eff_values)):
+                    print(f"{i:2d}: {eff_values[i]:.6f} ± {eff_errors[i]:.6f}")
+        except Exception as e:
+            log.error(f"计算分波效率失败: {e}")
+
+    # ---- 保存摘要 ----
+    optimizer.save_all_results_summary(
+        ff_values, ff_errors, fit_attempted=True,
+        eff_values=eff_values, eff_errors=eff_errors,
+        output_dir=output_dir,
+    )
+
+
+if __name__ == "__main__":
+    main()
