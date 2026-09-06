@@ -3590,13 +3590,29 @@ public:
                 int nData = events_[gpu][1];
                 if (nData > 0) {
                     totalDataEvents += nData;
+                    auto vvt0 = std::chrono::high_resolution_clock::now();
                     hessianSegmentContrib((int)gpu, 1, d_v_gpu, d_hess_gpu, n_ext,
                                           hessianFastPathEnabled());
+                    if (hprof) {
+                        auto vvt1 = std::chrono::high_resolution_clock::now();
+                        printf("[PROF] H.vv-data(gpu%zu): %.2f ms (nData=%d)\n", gpu,
+                            std::chrono::duration<double, std::milli>(vvt1 - vvt0).count(), nData);
+                        fflush(stdout);
+                    }
                 }
 
                 // bkg 段（无本底事件则内部直接返回）
-                hessianSegmentContrib((int)gpu, 2, d_v_gpu, d_hess_gpu, n_ext,
-                                      hessianFastPathEnabled());
+                {
+                    auto vvt0 = std::chrono::high_resolution_clock::now();
+                    hessianSegmentContrib((int)gpu, 2, d_v_gpu, d_hess_gpu, n_ext,
+                                          hessianFastPathEnabled());
+                    if (hprof) {
+                        auto vvt1 = std::chrono::high_resolution_clock::now();
+                        printf("[PROF] H.vv-bkg(gpu%zu): %.2f ms\n", gpu,
+                            std::chrono::duration<double, std::milli>(vvt1 - vvt0).count());
+                        fflush(stdout);
+                    }
+                }
 
                 if (gpu == dev.index()) {
                     double one = 1.0;
@@ -3619,8 +3635,17 @@ public:
             cudaSetDevice(dev.index());
 
             // phsp Hessian contribution
-            double phsp_weight = data_total_weight_ - bkg_integral_;
-            computePhspHessian(d_phsp_matrix_, d_vec, phsp_factor, phsp_weight, d_hess_ext, n_ext);
+            {
+                auto vvt0 = std::chrono::high_resolution_clock::now();
+                double phsp_weight = data_total_weight_ - bkg_integral_;
+                computePhspHessian(d_phsp_matrix_, d_vec, phsp_factor, phsp_weight, d_hess_ext, n_ext);
+                if (hprof) {
+                    auto vvt1 = std::chrono::high_resolution_clock::now();
+                    printf("[PROF] H.vv-phspHessian: %.2f ms\n",
+                        std::chrono::duration<double, std::milli>(vvt1 - vvt0).count());
+                    fflush(stdout);
+                }
+            }
 
             // Constraint projection (identity in coupling mode since nv=na=n_ext)
             if (is_coupling || n_ext == nv) {
