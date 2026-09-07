@@ -33,10 +33,10 @@ echo "--- .so: $(ls -l --time-style=+%F\ %T $CTPWA_ROOT/ctpwa.so | awk '{print $
 nvidia-smi --query-gpu=index,name --format=csv
 
 echo; echo "===== 1) 全量 pytest ====="
-$PY -m pytest . -q --tb=short 2>&1 | tail -5
+$PY -m pytest . -q --tb=short 2>&1
 
 echo; echo "===== 2) 三档数值一致性（simple free-θ + interp fixed-θ）====="
-$PY -m pytest test_float_mode.py -q --tb=short 2>&1 | tail -3
+$PY -m pytest test_float_mode.py -q --tb=short 2>&1
 
 echo; echo "===== 3) 显存: 三档 mem_probe（auto/hybrid 缺省、float、double）====="
 # simple: 每档一次（Float 档跳过 hessian 段; hybrid/double 跑全流程）
