@@ -1131,8 +1131,7 @@ def main():
         log.error(f"  PyTorch version: {torch.__version__}")
         log.error(f"  CUDA available:  {torch.cuda.is_available()}")
         sys.exit(1)
-    gpu_name = torch.cuda.get_device_name(0)
-    print(f"GPU: {gpu_name}")
+    # GPU 型号不打印（DeviceManager 输出已含设备信息/显存）
 
     output_dir = cfg["output_dir"]
     os.makedirs(output_dir, exist_ok=True)
