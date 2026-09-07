@@ -128,6 +128,10 @@ public:
 
 private:
     std::vector<DeviceInfo> devices_;
+    // 最近一次 checkCapacity 得到的每 GPU 预计占用（bytes, 与 devices_ 同下标;
+    // 为空表示还没估算过——print() 此时回退显示空闲量）。checkCapacity 是
+    // const 接口, 故为 mutable。
+    mutable std::vector<double> estimated_usage_;
     ComplexPrecision complex_precision_ = ComplexPrecision::Float;
     std::string storage_note_;   // 运行时存储档位（analysis 注入; 空则不打印）
 };

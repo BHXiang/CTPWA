@@ -11,6 +11,7 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -154,9 +155,13 @@ void DeviceManager::print() const
 {
     std::printf("DeviceManager: %d device(s)\n", (int)devices_.size());
     for (const auto& d : devices_) {
+        // 显示"预计占用/总量"; 未估算过时回退显示空闲量（detect 快照）
+        double used = (size_t)d.index < estimated_usage_.size()
+                          ? estimated_usage_[d.index]
+                          : (double)d.free_memory;
         std::printf("  [%d] %s (sm_%d%d), memory %s / %s%s\n",
                     d.index, d.name.c_str(), d.cc_major, d.cc_minor,
-                    formatBytes((double)d.free_memory).c_str(),
+                    formatBytes(used).c_str(),
                     formatBytes((double)d.total_memory).c_str(),
                     d.available ? "" : " [unavailable]");
     }
@@ -239,6 +244,10 @@ DeviceManager::CapacityResult DeviceManager::checkCapacity(
         return result;
     }
 
+    // 记录每 GPU 预计占用（与 devices_ 同下标; 无事件分布信息时记 0）。
+    // 注意: 连同 unavailable 设备一起找平, 保证 print() 下标对应。
+    estimated_usage_.assign(devices_.size(), 0.0);
+
     // 每个 GPU 的事件数用 data/phsp 的最大者估算峰值内存
     // （调用方传入的是"该 GPU 分配到的最大样本事件数"）
     for (size_t i = 0; i < devices_.size() && i < events_per_gpu.size(); ++i) {
@@ -248,6 +257,7 @@ DeviceManager::CapacityResult DeviceManager::checkCapacity(
         MemEstimate m = estimate(events_per_gpu[i], n_amplitudes, n_polar,
                                  n_slcombs, n_particles, has_bkg, n_theta);
         double need = m.total_bytes_gpu + m.total_bytes_other;
+        estimated_usage_[i] = need;
 
         // 可用显存：detect 时的空闲快照。若快照为 0（未知），用总显存兜底
         double avail = (d.free_memory > 0) ? (double)d.free_memory

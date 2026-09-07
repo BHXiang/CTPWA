@@ -4999,7 +4999,9 @@ private:
                                " | 核心 " + core + " (precision: " + req + ")";
             device_mgr_.setStorageNote(note);
         }
-        device_mgr_.print();
+        // DeviceManager 设备列表延迟到内存预检之后打印——那时 checkCapacity
+        // 已把每 GPU 预计占用写入 estimated_usage_, memory 字段显示"预计/总量"
+        // 而非"空闲/总量"。需设备信息本身时仍可调 ctpwa.DeviceManager().print()。
 
         initializeMultiGPUs(init_events);
 
@@ -5033,6 +5035,8 @@ private:
             auto cap = device_mgr_.checkCapacity(
                 peak_events, n_amplitudes_, n_polar_, n_gls_, particles_.size(),
                 has_bkg, params_.nFreeTheta());
+            // 预检后打印设备列表（含每 GPU 预计占用）
+            device_mgr_.print();
             if (cap.overall == DeviceManager::CapacityStatus::FAIL) {
                 std::cerr << "ERROR: 内存预检失败——GPU " << cap.failing_device
                           << " 无法承载数据: " << cap.failing_buffer
