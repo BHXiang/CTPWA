@@ -3658,27 +3658,25 @@ void AmpCalc::computeUnifiedHessian(
                     std::chrono::duration<double, std::milli>(t_s3mid - t_s3).count());
                 fflush(stdout);
             }
-            // Cross-block mixed
-            for (size_t bi = 0; bi < blocks_.size(); ++bi) {
-                auto& blkA = blocks_[bi];
-                // 用 block bi 自己的 cas（多链时不同链 SL 数不同）
-                int nSL_A = static_cast<int>(cas_list_[blkA.cas_idx]->getNSLCombs());
-                for (size_t bj = 0; bj < blocks_.size(); ++bj) {
-                    if (bi == bj) continue;
-                    auto& btB = temps_per_gpu[gpu][bj];
-                    if (!btB.d_g) continue;
-                    // 跨链 vθ 项是必需的：去掉 cas_idx 过滤（kernel 只用 d_amp，与链无关）
-                    int grid = (nch + kBlockSize - 1) / kBlockSize;
-                    hessianCrossMixedKernel<<<grid, kBlockSize>>>(
-                        d_S_re, d_S_im, d_I_full,
-                        d_amp_c,
-                        btB.d_g, btB.d_dS_re, btB.d_dS_im, btB.d_gidx, btB.NT,
-                        nSL_A, blkA.site,
-                        nch, nPol, n_amp_total,
-                        d_mix_g, nFreeResParams(),
-                        default_weight, d_w_c, d_msum_g, evt_off_c);
-                    cudaDeviceSynchronize();
-                }
+            // Cross-block mixed（单 launch 化: 每个自由块一次 launch, kernel 内
+            // 遍历全部 n_amp_total 个波 a —— 数学上等价于"按块外层循环"的并集
+            // （a ∈ 全波), 但消除 launch 数爆炸: 旧版外层遍历全部块 × 自由块
+            // → 每窗口几十~上百次 launch+sync（A100 实测 stage4 55ms/窗口, 其中
+            // ~53ms 为 launch/同步开销）。kernel 只用 d_amp 波索引与 S/dS,
+            // 与块的 cas/SL 结构无关 → 传 nSL_A=n_amp_total, site_A=0。
+            for (size_t bj = 0; bj < blocks_.size(); ++bj) {
+                auto& btB = temps_per_gpu[gpu][bj];
+                if (!btB.d_g) continue;
+                int grid = (nch + kBlockSize - 1) / kBlockSize;
+                hessianCrossMixedKernel<<<grid, kBlockSize>>>(
+                    d_S_re, d_S_im, d_I_full,
+                    d_amp_c,
+                    btB.d_g, btB.d_dS_re, btB.d_dS_im, btB.d_gidx, btB.NT,
+                    n_amp_total, 0,
+                    nch, nPol, n_amp_total,
+                    d_mix_g, nFreeResParams(),
+                    default_weight, d_w_c, d_msum_g, evt_off_c);
+                cudaDeviceSynchronize();
             }
         }
 
