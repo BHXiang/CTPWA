@@ -3668,7 +3668,9 @@ void AmpCalc::computeUnifiedHessian(
                 auto& btB = temps_per_gpu[gpu][bj];
                 if (!btB.d_g) continue;
                 int grid = (nch + kBlockSize - 1) / kBlockSize;
-                hessianCrossMixedKernel<<<grid, kBlockSize>>>(
+                // 共享归约槽: 2×ACHUNK(32)×NTb×8B
+                int smem = 2 * 32 * btB.NT * (int)sizeof(double);
+                hessianCrossMixedKernel<<<grid, kBlockSize, smem>>>(
                     d_S_re, d_S_im, d_I_full,
                     d_amp_c,
                     btB.d_g, btB.d_dS_re, btB.d_dS_im, btB.d_gidx, btB.NT,

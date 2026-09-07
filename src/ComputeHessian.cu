@@ -1280,6 +1280,11 @@ __global__ void hessianMixedBlockKernel(
 // Stage 4: Cross-block mixed Hessian (vθ cross terms)
 // Term 2 = 0 (∂θ_amp_a = 0 for a in A, θ in B). Terms 1+3 survive.
 // ============================================================
+// vθ cross-mixed kernel（共享归约版）: 每事件对 (a∈全波, jb∈自由块B) 的贡献先在
+// block 内 shared 累加, 每 block 对全局只落盘一次 → 全局原子量降 ~256×。
+// - a 按 ACHUNK 分块（shared 槽上限 2×ACHUNK×NTb; nAmp 任意大）
+// - pol 仅出现在逐事件项内层（无 pol 维数组）→ nPol 任意（3 或 200 同构）
+// - d_amp 每 (a,p) 只读一次（旧版在 term3 与 term1 重复读）
 __global__ void hessianCrossMixedKernel(
     const double* d_S_re, const double* d_S_im,
     const double* d_I,
@@ -1293,6 +1298,10 @@ __global__ void hessianCrossMixedKernel(
     double* d_phsp_sum = nullptr,
     int evt_offset = 0)
 {
+    constexpr int ACHUNK = 32;                 // a 分块（shared 槽上限）
+    extern __shared__ double sm[];             // [2][ACHUNK][NTb], NTb ≤ 16 时 ≤ 8KB
+    int nslot = 2 * ACHUNK * NTb;
+
     int evt = blockIdx.x * blockDim.x + threadIdx.x;
     if (evt >= nEvents) return;
     double w = d_event_weights ? d_event_weights[evt] : default_weight;
@@ -1307,47 +1316,73 @@ __global__ void hessianCrossMixedKernel(
     const double* dS_reB_ptr = d_dS_re_B + evt * NTb * nPolar;
     const double* dS_imB_ptr = d_dS_im_B + evt * NTb * nPolar;
 
-    for (int a = 0; a < nSL_A; ++a) {
-        int ga = site_A + a;
+    const ctComplex* amp_base = d_amp + evt * nPolar * n_amp_total;
+    const int tid = threadIdx.x;
+    const int nthreads = blockDim.x;
+    double* out = is_phsp ? d_phsp_sum : d_mixed;
 
-        double term3_re = 0.0, term3_im = 0.0;
-        for (int p = 0; p < nPolar; ++p) {
-            ctComplex amp_ap = d_amp[evt * nPolar * n_amp_total + p * n_amp_total + ga];
-            double ar = (double)amp_ap.x, ai = (double)amp_ap.y;
-            double sr = Sr_ptr[p], si = Si_ptr[p];
-            term3_re += sr * ar + si * ai;
-            term3_im += sr * ai - si * ar;
-        }
+    // term3 与 term1 都需要 amp: 先读 S 与 B 侧标量到寄存器（每事件一次）
+    // term1[jb] 按 (a,p) 累积时 amp 每 (a,p) 只读一次
+    for (int ac = 0; ac < nSL_A; ac += ACHUNK) {
+        int a0 = ac, a1 = (ac + ACHUNK < nSL_A) ? ac + ACHUNK : nSL_A;
+        int na = a1 - a0;
+        for (int i = tid; i < 2 * na * NTb; i += nthreads) sm[i] = 0.0;
+        __syncthreads();
 
-        for (int jb = 0; jb < NTb; ++jb) {
-            int gjb = d_gidx_B[jb];
-            if (gjb < 0) continue;
-            double gj_val = gB_ptr[jb];
+        for (int a = a0; a < a1; ++a) {
+            int ga = site_A + a;
+            const ctComplex* amp_a = amp_base + ga; // 步长 n_amp_total×p
 
-            double term1_re = 0.0, term1_im = 0.0;
+            double term3_re = 0.0, term3_im = 0.0;
             for (int p = 0; p < nPolar; ++p) {
-                ctComplex amp_ap = d_amp[evt * nPolar * n_amp_total + p * n_amp_total + ga];
+                ctComplex amp_ap = amp_a[p * n_amp_total];
                 double ar = (double)amp_ap.x, ai = (double)amp_ap.y;
-                int ds_idx = jb * nPolar + p;
-                double ds_re = dS_reB_ptr[ds_idx], ds_im = dS_imB_ptr[ds_idx];
-                term1_re += ds_re * ar + ds_im * ai;
-                term1_im += ds_re * ai - ds_im * ar;
+                double sr = Sr_ptr[p], si = Si_ptr[p];
+                term3_re += sr * ar + si * ai;
+                term3_im += sr * ai - si * ar;
             }
 
-            if (is_phsp) {
-                atomicAdd(&d_phsp_sum[ga * mixed_ld + gjb], term1_re);
-                atomicAdd(&d_phsp_sum[(n_amp_total + ga) * mixed_ld + gjb], term1_im);
-            } else {
-                double coeff = w * 2.0 * inv_I;
-                double val_re = -coeff * (term1_re + gj_val * term3_re);
-                double val_im =  coeff * (term1_im + gj_val * term3_im);
-                atomicAdd(&d_mixed[ga * mixed_ld + gjb], val_re);
-                atomicAdd(&d_mixed[(n_amp_total + ga) * mixed_ld + gjb], val_im);
+            for (int jb = 0; jb < NTb; ++jb) {
+                int gjb = d_gidx_B[jb];
+                if (gjb < 0) continue;
+                double gj_val = gB_ptr[jb];
+                double t1_re = 0.0, t1_im = 0.0;
+                for (int p = 0; p < nPolar; ++p) {
+                    ctComplex amp_ap = amp_a[p * n_amp_total];
+                    double ar = (double)amp_ap.x, ai = (double)amp_ap.y;
+                    int ds_idx = jb * nPolar + p;
+                    double ds_re = dS_reB_ptr[ds_idx], ds_im = dS_imB_ptr[ds_idx];
+                    t1_re += ds_re * ar + ds_im * ai;
+                    t1_im += ds_re * ai - ds_im * ar;
+                }
+                double v_re, v_im;
+                if (is_phsp) {
+                    v_re = t1_re;
+                    v_im = t1_im;
+                } else {
+                    double coeff = w * 2.0 * inv_I;
+                    v_re = -coeff * (t1_re + gj_val * term3_re);
+                    v_im =  coeff * (t1_im + gj_val * term3_im);
+                }
+                int lj = (a - a0) * NTb + jb;
+                atomicAdd(&sm[lj], v_re);
+                atomicAdd(&sm[na * NTb + lj], v_im);
             }
         }
-        // d_phsp_t3 is NOT written here: term3 is a per-amplitude sum,
-        // already accumulated by hessianMixedBlockKernel (stage 3).
-        // Writing again from cross-block would double-count.
+        __syncthreads();
+
+        // 每 block 对全局落盘一次（每槽 1 个线程负责）
+        for (int i = tid; i < 2 * na * NTb; i += nthreads) {
+            int row2 = i / (na * NTb);          // 0=re 行, 1=im 行
+            int lj = i % (na * NTb);
+            int a = a0 + lj / NTb;
+            int jb = lj % NTb;
+            int gjb = d_gidx_B[jb];
+            if (gjb < 0 || sm[i] == 0.0) continue;
+            int ga = site_A + a;
+            atomicAdd(&out[(row2 * n_amp_total + ga) * mixed_ld + gjb], sm[i]);
+        }
+        __syncthreads();
     }
 }
 
